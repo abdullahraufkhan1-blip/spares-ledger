@@ -42,11 +42,13 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
   <div class="panel">
     <h2>Upload monthly transaction file</h2>
     <form class="new" id="up-form">
-      <div class="field" style="flex:2"><label>Monthly .xlsx (like JUN-2026.xlsx)</label>
+      <div class="field" style="flex:2"><label>Transaction .xlsx (full month or partial, e.g. 1–15 Jul)</label>
         <input type="file" id="up-file" accept=".xlsx"></div>
+      <div class="field" style="max-width:140px"><label>Covers from (optional)</label><input type="date" id="up-from"></div>
+      <div class="field" style="max-width:140px"><label>Covers to (optional)</label><input type="date" id="up-to"></div>
       <button type="submit" id="up-btn">Upload &amp; load</button>
     </form>
-    <div class="msg" id="up-msg">Re-uploading a month replaces it — totals never double.</div>
+    <div class="msg" id="up-msg">Each file replaces only the dates it covers — partial periods are fine and totals never double. Leave the dates empty to use the file's own date span; set them to declare a wider period (they must enclose every date in the file).</div>
     <table>
       <thead><tr><th>Period</th><th>File</th><th>Loaded at</th><th>Rows</th><th>Total value</th><th>Warnings</th></tr></thead>
       <tbody id="up-rows"></tbody>
@@ -183,7 +185,9 @@ $('up-form').onsubmit=async e=>{
   if(!f){m.className='msg err';m.textContent='Choose the monthly .xlsx file first.';return;}
   m.className='msg';m.textContent='Uploading and loading — this takes a minute for a full month…';
   $('up-btn').disabled=true;
-  const fd=new FormData(); fd.append('file',f);
+  const fd=new FormData();
+  if($('up-from').value||$('up-to').value){fd.append('date_from',$('up-from').value);fd.append('date_to',$('up-to').value);}
+  fd.append('file',f);
   const r=await fetch('/api/admin/upload',{method:'POST',body:fd});
   const j=await r.json();
   $('up-btn').disabled=false;
