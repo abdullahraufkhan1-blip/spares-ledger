@@ -30,6 +30,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('xlsx')
     ap.add_argument('--db', default='inventory.db')
+    ap.add_argument('--range-from', dest='rfrom', default=None)
+    ap.add_argument('--range-to', dest='rto', default=None)
     args = ap.parse_args()
 
     all_cols = pd.read_excel(args.xlsx, nrows=0).columns.str.strip()
@@ -63,6 +65,15 @@ def main():
     month_tag = months.mode()[0]                      # kept for reference/reporting
     date_from = df['tran_date'].min()
     date_to   = df['tran_date'].max()
+    # Optional declared range: must fully enclose the file's own dates.
+    if args.rfrom or args.rto:
+        if not (args.rfrom and args.rto):
+            print("ABORT: provide both range-from and range-to, or neither."); sys.exit(1)
+        if args.rfrom > date_from or args.rto < date_to:
+            print(f"ABORT: declared range {args.rfrom}..{args.rto} does not cover the file's "
+                  f"transaction dates {date_from}..{date_to}. Fix the range or the file.")
+            sys.exit(1)
+        date_from, date_to = args.rfrom, args.rto
 
     con = sqlite3.connect(args.db, timeout=15)
     con.execute('PRAGMA busy_timeout=15000')
@@ -184,3 +195,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
