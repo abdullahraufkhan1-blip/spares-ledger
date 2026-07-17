@@ -354,7 +354,17 @@ app.post('/api/admin/upload', requireRole('admin'), upload.single('file'), (req,
   if (!/\.xlsx$/i.test(orig)) { fs.unlink(req.file.path, () => {}); return res.status(400).json({ error: 'Please upload the monthly .xlsx transaction file.' }); }
   const tmp = req.file.path + '.xlsx';
   fs.renameSync(req.file.path, tmp);
-  execFile('python3', [path.join(__dirname, 'ingest.py'), tmp, '--db', DB_PATH],
+  const args = [path.join(__dirname, 'ingest.py'), tmp, '--db', DB_PATH];
+  const DR = /^\d{4}-\d{2}-\d{2}$/;
+  const rf = req.body.date_from, rt = req.body.date_to;
+  if (rf || rt) {
+    if (!DR.test(rf || '') || !DR.test(rt || '') || rf > rt) {
+      fs.unlink(tmp, () => {});
+      return res.status(400).json({ error: 'If you set a range, provide valid From and To dates (From ≤ To).' });
+    }
+    args.push('--range-from', rf, '--range-to', rt);
+  }
+  execFile('python3', args,
            { timeout: 5 * 60 * 1000 }, (err, stdout, stderr) => {
     fs.unlink(tmp, () => {});
     if (err) {
@@ -370,3 +380,5 @@ app.post('/api/admin/upload', requireRole('admin'), upload.single('file'), (req,
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Spares dashboard on http://localhost:${PORT}`));
+
+
