@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23386B">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>Spares Ledger · Interloop Knitting</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEF0F3; --surface:#FFFFFF; --ink:#14181F; --muted:#69707C;
+  --indigo:#23386B; --indigo-soft:#E7EBF4; --bleed:#C22F2F; --bleed-soft:#F7E6E4;
+  --line:#DDE1E7; --radius:10px;
+  --display:'Archivo',sans-serif; --body:'IBM Plex Sans',sans-serif; --mono:'IBM Plex Mono',monospace;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;-webkit-font-smoothing:antialiased}
+button,select,input{font-family:inherit;font-size:inherit}
+a{color:var(--indigo)}
+
+/* header */
+header{background:var(--indigo);color:#fff;padding:14px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+header h1{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:.4px;text-transform:uppercase}
+header .sub{font-size:12px;opacity:.75}
+header .who{margin-left:auto;font-size:12.5px;display:flex;gap:10px;align-items:center}
+header .who .badge{background:rgba(255,255,255,.15);border-radius:99px;padding:2px 10px;font-size:11.5px}
+header .who a,header .who button{color:#C9D2E6;background:none;border:none;cursor:pointer;font-size:12.5px;text-decoration:underline;padding:0}
+
+.wrap{max-width:1080px;margin:0 auto;padding:14px 14px 60px}
+
+/* controls */
+.controls{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:end}
+.field{display:flex;flex-direction:column;gap:4px;min-width:120px;flex:1}
+.field label{font-family:var(--display);font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
+.field input,.field select{border:1px solid var(--line);border-radius:6px;padding:8px;background:#fff;color:var(--ink)}
+.field input:focus,.field select:focus,button:focus-visible{outline:2px solid var(--indigo);outline-offset:1px}
+#apply{background:var(--indigo);color:#fff;border:none;border-radius:6px;padding:9px 18px;font-weight:600;cursor:pointer;flex:0}
+#apply:hover{background:#1a2b54}
+
+/* active filter chips */
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 2px 0}
+.chip{background:var(--indigo-soft);color:var(--indigo);border-radius:99px;padding:4px 10px;font-size:12.5px;display:flex;gap:6px;align-items:center}
+.chip button{background:none;border:none;color:inherit;cursor:pointer;font-weight:700;padding:0;line-height:1}
+
+/* KPI tiles */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:14px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;cursor:pointer;transition:border-color .12s}
+.kpi:hover{border-color:var(--indigo)}
+.kpi .hd{font-family:var(--display);font-weight:700;font-size:12px;letter-spacing:.8px;color:var(--muted)}
+.kpi .rate{font-family:var(--mono);font-weight:600;font-size:22px;margin-top:2px}
+.kpi .rate small{font-size:11px;color:var(--muted);font-weight:400}
+.kpi .cost{font-family:var(--mono);font-size:11.5px;color:var(--bleed);margin-top:2px}
+.kpi.top .rate{color:var(--bleed)}
+.kpis-note{font-size:11.5px;color:var(--muted);margin-top:6px}
+
+.viewbar{display:flex;gap:6px;margin-top:18px}
+.viewbar button{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 16px;cursor:pointer;color:var(--muted);font-weight:600;font-family:var(--display);letter-spacing:.3px}
+.viewbar button.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+#cmp-holder table{min-width:640px}
+#cmp-holder td.cell{font-family:var(--mono);font-size:12.5px;text-align:right;background:rgba(194,47,47,var(--a,0));}
+#cmp-holder td.tot{font-family:var(--mono);font-weight:600;text-align:right}
+#cmp-holder td.rowkey{max-width:260px}
+#cmp-holder td.rowkey .code{font-family:var(--mono);font-size:12px;display:block}
+#cmp-holder td.rowkey .desc{font-size:11px;color:var(--muted);display:block;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#cmp-dim,#cmp-mode{border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:#fff}
+
+/* group tabs */
+.groupbar{display:flex;gap:6px;overflow-x:auto;margin-top:18px;padding-bottom:2px}
+.groupbar button{border:1px solid var(--line);background:var(--surface);border-radius:99px;padding:7px 14px;cursor:pointer;white-space:nowrap;color:var(--muted);font-weight:500}
+.groupbar button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+
+/* ranking table */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-top:10px;overflow:hidden}
+.panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.panel-head h2{font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:.3px}
+.panel-head .tot{font-family:var(--mono);font-size:13px}.panel-head .tot b{color:var(--bleed)}
+#pdf-btn{border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;font-size:12.5px}
+#pdf-btn:hover{background:var(--indigo-soft)}
+table{width:100%;border-collapse:collapse}
+th{font-family:var(--display);font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th.num,td.num{text-align:right}
+td{padding:7px 10px;border-bottom:1px solid #F0F2F5;vertical-align:middle}
+tr.row{cursor:pointer}
+tr.row:hover td{background:#F7F9FC}
+td .rank{font-family:var(--mono);color:var(--muted);font-size:12px;width:26px;display:inline-block}
+td.key{font-weight:500;max-width:340px}
+td.key .code{font-family:var(--mono);font-size:12px}
+td.key .desc{display:block;font-size:11.5px;color:var(--muted);font-weight:400;margin-left:26px;max-width:310px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.num{font-family:var(--mono);font-size:13px}
+td.cost{font-family:var(--mono);font-weight:600}
+.bar-cell{width:26%;min-width:90px}
+.bar{height:14px;background:var(--bleed-soft);border-radius:3px;position:relative}
+.bar i{position:absolute;inset:0;width:var(--w);background:var(--bleed);border-radius:3px}
+td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:6px}
+.empty{padding:26px;text-align:center;color:var(--muted)}
+.foot{padding:10px 14px;font-size:12px;color:var(--muted)}
+
+@media (max-width:640px){
+  .bar-cell{width:32%}
+  td.key{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  th:nth-child(3),td:nth-child(3){display:none} /* hide qty on phones */
+}
+@media (prefers-reduced-motion:no-preference){
+  .bar i{transition:width .35s ease}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Spares Ledger</h1>
+  <span class="sub">Interloop · Knitting · spare-parts consumption</span>
+  <span class="who" id="who"></span>
+</header>
+
+<div class="wrap">
+
+  <div class="controls">
+    <div class="field"><label for="from">From</label><input type="date" id="from"></div>
+    <div class="field"><label for="to">To</label><input type="date" id="to"></div>
+    <div class="field"><label for="f-hd">Division</label><select id="f-hd"><option value="">All</option></select></div>
+    <div class="field"><label for="f-maint">Maint type</label><select id="f-maint"><option value="">All</option></select></div>
+    <div class="field"><label for="f-shift">Shift</label><select id="f-shift"><option value="">All</option></select></div>
+    <div class="field"><label for="f-nature">Nature</label><select id="f-nature"><option value="">All</option></select></div>
+    <div class="field"><label for="f-category">Category</label><select id="f-category"><option value="">All</option></select></div>
+    <div class="field"><label for="f-model">Model</label><select id="f-model"><option value="">All</option></select></div>
+    <button id="apply">Apply</button>
+  </div>
+
+  <div class="chips" id="chips"></div>
+
+  <div class="kpis" id="kpis"></div>
+  <div class="kpis-note" id="kpis-note"></div>
+
+  <div class="viewbar" id="viewbar">
+    <button data-v="rank" class="on">Ranking</button>
+    <button data-v="compare" id="compare-tab">Plant comparison</button>
+  </div>
+
+  <div class="groupbar" id="groupbar"></div>
+
+  <div class="panel" id="compare-panel" hidden>
+    <div class="panel-head">
+      <h2>Plant comparison</h2>
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="cmp-dim"><option value="category">By category</option><option value="item">By item</option></select>
+        <select id="cmp-mode"><option value="cost">Total PKR</option><option value="rate">PKR / machine day</option></select>
+      </span>
+    </div>
+    <div id="cmp-holder" style="overflow-x:auto"></div>
+    <div class="foot">Shading is relative within each row — the darkest cell is that row's heaviest plant.</div>
+  </div>
+
+  <div class="panel" id="rank-panel">
+    <div class="panel-head">
+      <h2 id="rank-title">Bleed by Hosiery Division</h2>
+      <span style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap">
+        <span class="tot" id="rank-total"></span>
+        <button id="pdf-btn" title="Download this report as PDF">Download PDF</button>
+      </span>
+    </div>
+    <div id="table-holder"></div>
+    <div class="foot" id="foot"></div>
+  </div>
+
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>n==null?'—':Number(n).toLocaleString('en-PK',{maximumFractionDigits:0});
+const state={group_by:'hd',filters:{},from:null,to:null,view:'rank'};
+let META=null;
+
+// drill order: clicking a row filters on it and steps to the next level
+const DRILL={hd:'store',store:'machine',cost_center:'machine',model:'machine',machine:'item',
+             nature:'category',category:'item'};
+// which filter key a group's row maps to when drilling
+const ROW_FILTER={hd:'hd',store:'store',cost_center:'cost_center',model:'model',
+                  machine:'machine',nature:'nature',category:'category'};
+
+let ME=null;
+async function init(){
+  const meR=await fetch('/api/me');
+  if(meR.status===401){location.href='/login.html';return;}
+  ME=await meR.json();
+  const who=$('who');
+  const roleLabel=ME.role==='viewer'?'full view':ME.role==='plant'?('plant · '+(ME.hd_code||'')):'admin';
+  who.innerHTML=`<span>${ME.display_name}</span><span class="badge">${roleLabel}</span>`+
+    (ME.role==='admin'?`<a href="/users.html">Users</a>`:'')+
+    `<button id="logout">Sign out</button>`;
+  document.getElementById('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST'});location.href='/login.html';};
+  META=await (await fetch('/api/meta')).json();
+  $('from').value=state.from=META.dates.min;
+  $('to').value=state.to=META.dates.max;
+  fill('f-hd',META.hds); fill('f-maint',META.maint_types); fill('f-shift',META.shifts);
+  fill('f-nature',META.natures); fill('f-category',META.categories); fill('f-model',META.models);
+  if(ME.role==='plant'&&ME.hd_code){ $('f-hd').value=ME.hd_code; $('f-hd').disabled=true; }
+  const gb=$('groupbar');
+  for(const [k,label] of Object.entries(META.groups)){
+    const b=document.createElement('button'); b.textContent=label; b.dataset.k=k;
+    b.onclick=()=>{state.group_by=k; render();};
+    gb.appendChild(b);
+  }
+  $('apply').onclick=()=>{readControls(); render();};
+  if(ME.role==='plant'){ $('compare-tab').style.display='none'; }
+  document.querySelectorAll('.viewbar button').forEach(b=>b.onclick=()=>{
+    state.view=b.dataset.v;
+    document.querySelectorAll('.viewbar button').forEach(x=>x.classList.toggle('on',x===b));
+    render();
+  });
+  $('cmp-dim').onchange=render; $('cmp-mode').onchange=render;
+  $('pdf-btn').onclick=()=>{window.open('/api/report.pdf?'+qs(),'_blank');};
+  render();
+}
+function fill(id,vals){const s=$(id);vals.forEach(v=>{const o=document.createElement('option');o.value=o.textContent=v;s.appendChild(o);});}
+function readControls(){
+  state.from=$('from').value; state.to=$('to').value;
+  const map={hd:'f-hd',maint_type:'f-maint',shift:'f-shift',nature:'f-nature',category:'f-category',model:'f-model'};
+  for(const [k,id] of Object.entries(map)){const v=$(id).value; if(v)state.filters[k]=v; else delete state.filters[k];}
+}
+function qs(){
+  const p=new URLSearchParams({from:state.from,to:state.to,group_by:state.group_by});
+  for(const [k,v] of Object.entries(state.filters)) p.set(k,v);
+  return p.toString();
+}
+
+async function render(){
+  // group tabs
+  document.querySelectorAll('.groupbar button').forEach(b=>b.classList.toggle('on',b.dataset.k===state.group_by));
+  // chips
+  const chips=$('chips'); chips.innerHTML='';
+  for(const [k,v] of Object.entries(state.filters)){
+    const c=document.createElement('span'); c.className='chip';
+    c.innerHTML=`${META.groups[k]||k}: <b>${v}</b>`;
+    const x=document.createElement('button'); x.textContent='×'; x.setAttribute('aria-label','Remove filter');
+    x.onclick=()=>{delete state.filters[k]; syncSelects(); render();};
+    c.appendChild(x); chips.appendChild(c);
+  }
+  const isCmp = state.view==='compare';
+  $('rank-panel').hidden=isCmp; $('compare-panel').hidden=!isCmp;
+  $('groupbar').style.display=isCmp?'none':'flex';
+  if(isCmp){
+    const kpi=await (await fetch('/api/kpi?'+qs())).json();
+    drawKpis(kpi);
+    const p=new URLSearchParams(qs()); p.set('dim',$('cmp-dim').value); p.delete('group_by');
+    const cmp=await (await fetch('/api/compare?'+p.toString())).json();
+    drawCompare(cmp);
+    return;
+  }
+  // KPI tiles + ranking in parallel
+  const [kpi,cons]=await Promise.all([
+    (await fetch('/api/kpi?'+qs())).json(),
+    (await fetch('/api/consumption?'+qs())).json(),
+  ]);
+  drawKpis(kpi); drawTable(cons);
+}
+
+function drawCompare(cmp){
+  const mode=$('cmp-mode').value;
+  const val=(r,hd)=>{
+    const c=r.per_hd[hd];
+    if(c==null) return null;
+    if(mode==='rate') return cmp.mdays[hd]? c/cmp.mdays[hd] : null;
+    return c;
+  };
+  const fmtV=v=>v==null?'—':(mode==='rate'?v.toFixed(2):fmt(v));
+  const head=`<tr><th>${cmp.dim==='item'?'Item':'Category'}</th>${cmp.hds.map(h=>`<th class="num">${h}</th>`).join('')}<th class="num">Total</th></tr>`;
+  const body=cmp.rows.map(r=>{
+    const vals=cmp.hds.map(h=>val(r,h));
+    const mx=Math.max(...vals.map(v=>v||0),1e-9);
+    const cells=cmp.hds.map((h,i)=>{
+      const v=vals[i];
+      const a=v==null?0:(0.06+0.34*(v/mx)).toFixed(2);
+      return `<td class="cell" style="--a:${v==null?0:a}" title="${h}: qty ${fmt(r.qty_per_hd[h])}">${fmtV(v)}</td>`;
+    }).join('');
+    const key=r.desc!==undefined?`<span class="code">${r.key}</span><span class="desc">${r.desc||''}</span>`:r.key;
+    const tot=mode==='rate'?'':`<td class="tot">${fmt(r.total)}</td>`;
+    return `<tr><td class="rowkey">${key}</td>${cells}${mode==='rate'?'<td class="tot">—</td>':tot}</tr>`;
+  }).join('');
+  $('cmp-holder').innerHTML=`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+function syncSelects(){
+  const map={hd:'f-hd',maint_type:'f-maint',shift:'f-shift',nature:'f-nature',category:'f-category',model:'f-model'};
+  for(const [k,id] of Object.entries(map)) $(id).value=state.filters[k]||'';
+}
+
+function drawKpis(kpi){
+  const box=$('kpis'); box.innerHTML='';
+  const max=Math.max(...kpi.rows.map(r=>r.cost_per_mday||0));
+  kpi.rows.forEach(r=>{
+    const d=document.createElement('div');
+    d.className='kpi'+(r.cost_per_mday===max&&max>0?' top':'');
+    d.innerHTML=`<div class="hd">${r.hd}</div>
+      <div class="rate">${r.cost_per_mday==null?'—':r.cost_per_mday.toFixed(2)} <small>/ machine day</small></div>
+      <div class="cost">${fmt(r.cost)} PKR</div>`;
+    d.title='Filter to '+r.hd;
+    d.onclick=()=>{state.filters.hd=r.hd; syncSelects(); state.group_by='store'; render();};
+    box.appendChild(d);
+  });
+  $('kpis-note').textContent = 'Rate = bleed ÷ machine days, pro-rated to the selected dates from admin-entered ranges.';
+}
+
+function drawTable(cons){
+  $('rank-title').textContent='Bleed by '+cons.group_label;
+  $('rank-total').innerHTML=`Total <b>${fmt(cons.total_cost)} PKR</b> · ${fmt(cons.total_txns)} issuances`;
+  const holder=$('table-holder');
+  if(!cons.rows.length){holder.innerHTML='<div class="empty">No issuances match these filters. Widen the date range or remove a filter.</div>';$('foot').textContent='';return;}
+  const max=cons.rows[0].cost||1;
+  const rows=cons.rows.map((r,i)=>`
+    <tr class="row" data-key="${encodeURIComponent(r.key)}">
+      <td class="key"><span class="rank">${String(i+1).padStart(2,'0')}</span>${
+        r.desc!==undefined
+          ? `<span class="code">${r.key??'—'}</span><span class="desc">${r.desc??''}</span>`
+          : (r.key??'—')}</td>
+      <td class="bar-cell"><div class="bar"><i style="--w:${(100*r.cost/max).toFixed(1)}%"></i></div></td>
+      <td class="num">${fmt(r.qty)}</td>
+      <td class="num">${fmt(r.txns)}</td>
+      <td class="num cost">${fmt(r.cost)}<span class="share">${(100*r.cost/cons.total_cost).toFixed(1)}%</span></td>
+    </tr>`).join('');
+  holder.innerHTML=`<table>
+    <thead><tr><th>${cons.group_label}</th><th>Bleed</th><th class="num">Qty</th><th class="num">Issuances</th><th class="num">Cost (PKR)</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+  const next=DRILL[state.group_by], fkey=ROW_FILTER[state.group_by];
+  $('foot').textContent = next ? 'Tap a row to drill into it.' : 'Deepest level for this grouping.';
+  if(next&&fkey){
+    holder.querySelectorAll('tr.row').forEach(tr=>{
+      tr.onclick=()=>{
+        let val=decodeURIComponent(tr.dataset.key);
+        if(state.group_by==='machine'){
+          const parts=val.split(' · ');
+          state.filters.store=parts[0];                                // pin the store too
+          val=parts.pop();
+        }
+        state.filters[fkey]=val; state.group_by=next; syncSelects(); render();
+      };
+    });
+  }
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Administration · Spares Ledger</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#EEF0F3;--surface:#fff;--ink:#14181F;--muted:#69707C;--indigo:#23386B;--indigo-soft:#E7EBF4;
+      --bleed:#C22F2F;--line:#DDE1E7;--radius:10px}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;font-size:14px}
+header{background:var(--indigo);color:#fff;padding:14px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+header h1{font-family:'Archivo',sans-serif;font-weight:800;font-size:19px;letter-spacing:.4px;text-transform:uppercase}
+header a{color:#C9D2E6;font-size:12.5px;margin-left:auto}
+.wrap{max-width:900px;margin:0 auto;padding:14px 14px 60px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-top:14px;overflow:hidden}
+.panel h2{font-family:'Archivo',sans-serif;font-weight:700;font-size:15px;padding:12px 14px;border-bottom:1px solid var(--line)}
+table{width:100%;border-collapse:collapse}
+th{font-family:'Archivo',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;
+   color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:8px 10px;border-bottom:1px solid #F0F2F5}
+td.mono{font-family:'IBM Plex Mono',monospace;font-size:12.5px}
+.role{border-radius:99px;padding:2px 10px;font-size:12px;font-weight:600;display:inline-block}
+.role.admin{background:#14181F;color:#fff}.role.viewer{background:var(--indigo-soft);color:var(--indigo)}
+.role.plant{background:#FDF1E4;color:#8A5A16}
+.off{color:var(--muted)}
+button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:5px 10px;font:inherit;font-size:12.5px;cursor:pointer}
+button:hover{border-color:var(--indigo);color:var(--indigo)}
+form.new{display:flex;flex-wrap:wrap;gap:10px;padding:14px;align-items:end}
+.field{display:flex;flex-direction:column;gap:4px;flex:1;min-width:130px}
+.field label{font-family:'Archivo',sans-serif;font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
+.field input,.field select{border:1px solid var(--line);border-radius:6px;padding:8px;font:inherit}
+form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px;font-weight:600}
+.msg{padding:0 14px 12px;font-size:12.5px;min-height:16px}.msg.err{color:var(--bleed)}.msg.ok{color:#1E7B3C}
+</style>
+</head>
+<body>
+<header><h1>Spares Ledger</h1><span style="font-size:12px;opacity:.75">Administration</span><a href="/">← Back to dashboard</a></header>
+<div class="wrap">
+
+  <div class="panel">
+    <h2>Upload monthly transaction file</h2>
+    <form class="new" id="up-form">
+      <div class="field" style="flex:2"><label>Monthly .xlsx (like JUN-2026.xlsx)</label>
+        <input type="file" id="up-file" accept=".xlsx"></div>
+      <button type="submit" id="up-btn">Upload &amp; load</button>
+    </form>
+    <div class="msg" id="up-msg">Re-uploading a month replaces it — totals never double.</div>
+    <table>
+      <thead><tr><th>Period</th><th>File</th><th>Loaded at</th><th>Rows</th><th>Total value</th><th>Warnings</th></tr></thead>
+      <tbody id="up-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Machine days</h2>
+    <form class="new" id="md-form" style="align-items:end">
+      <div class="field" style="max-width:140px"><label>From</label><input type="date" id="md-from"></div>
+      <div class="field" style="max-width:140px"><label>To</label><input type="date" id="md-to"></div>
+      <div id="md-fields" style="display:flex;gap:10px;flex-wrap:wrap;flex:3"></div>
+      <button type="submit">Save machine days</button>
+    </form>
+    <div class="msg" id="md-msg">Machine days belong to a date range (a month, a week — your choice). Overlapping ranges for the same division are refused.</div>
+    <table>
+      <thead><tr><th>Division</th><th>From</th><th>To</th><th>Machine days</th><th></th></tr></thead>
+      <tbody id="md-rows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Add user</h2>
+    <form class="new" id="new">
+      <div class="field"><label>Username</label><input id="n-user" required></div>
+      <div class="field"><label>Display name</label><input id="n-name"></div>
+      <div class="field"><label>Password (min 8)</label><input id="n-pass" type="password" required minlength="8"></div>
+      <div class="field"><label>Role</label>
+        <select id="n-role">
+          <option value="viewer">Full view (read-only)</option>
+          <option value="plant">Plant user</option>
+          <option value="admin">Admin</option>
+        </select></div>
+      <div class="field" id="hd-field" hidden><label>Division</label><select id="n-hd"></select></div>
+      <button type="submit">Add user</button>
+    </form>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Users</h2>
+    <table>
+      <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Division</th><th>Status</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const HDS=['HD-1','HD-2','HD-3','HD-4','HD-5','HD-6'];
+HDS.forEach(h=>{const o=document.createElement('option');o.value=o.textContent=h;$('n-hd').appendChild(o);});
+$('n-role').onchange=()=>{$('hd-field').hidden = $('n-role').value!=='plant';};
+
+async function load(){
+  const r=await fetch('/api/admin/users');
+  if(r.status===401||r.status===403){location.href='/';return;}
+  const users=await r.json();
+  $('rows').innerHTML=users.map(u=>`
+    <tr class="${u.active?'':'off'}">
+      <td class="mono">${u.username}</td><td>${u.display_name}</td>
+      <td><span class="role ${u.role}">${u.role==='viewer'?'full view':u.role}</span></td>
+      <td>${u.hd_code||'—'}</td>
+      <td>${u.active?'active':'deactivated'}</td>
+      <td style="text-align:right;white-space:nowrap">
+        <button onclick="resetPw(${u.user_id},'${u.username}')">Reset password</button>
+        <button onclick="toggle(${u.user_id},${u.active?0:1})">${u.active?'Deactivate':'Reactivate'}</button>
+      </td>
+    </tr>`).join('');
+}
+async function post(url,body){
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();
+  const m=$('msg'); m.className='msg '+(r.ok?'ok':'err');
+  m.textContent=r.ok?'Saved.':(j.error||'Failed.');
+  if(r.ok) load();
+}
+window.resetPw=(id,name)=>{const p=prompt(`New password for ${name} (min 8 chars):`); if(p) post('/api/admin/users/'+id,{password:p});};
+window.toggle=(id,active)=>post('/api/admin/users/'+id,{active});
+$('new').onsubmit=e=>{e.preventDefault();
+  post('/api/admin/users',{username:$('n-user').value,display_name:$('n-name').value||$('n-user').value,
+    password:$('n-pass').value,role:$('n-role').value,hd_code:$('n-hd').value});
+  e.target.reset(); $('hd-field').hidden=true;
+};
+load();
+
+// ---------- machine days (date-range based) ----------
+async function loadMd(){
+  const r=await fetch('/api/admin/machine-days'); if(!r.ok) return;
+  const d=await r.json();
+  if(!document.querySelectorAll('#md-fields input').length){
+    $('md-fields').innerHTML=d.hds.map(h=>`
+      <div class="field" style="max-width:110px"><label>${h}</label>
+        <input type="number" step="0.01" min="0" data-hd="${h}" placeholder="—"></div>`).join('');
+  }
+  $('md-rows').innerHTML=d.entries.length?d.entries.map(e=>`
+    <tr><td>${e.hd_code}</td><td class="mono">${e.date_from}</td><td class="mono">${e.date_to}</td>
+        <td class="mono">${e.machine_days.toLocaleString()}</td>
+        <td style="text-align:right"><button onclick="delMd(${e.entry_id})">Delete</button></td></tr>`).join('')
+    :'<tr><td colspan="5" style="color:var(--muted)">No machine-day entries yet.</td></tr>';
+}
+window.delMd=async id=>{
+  if(!confirm('Delete this machine-day entry?'))return;
+  await fetch('/api/admin/machine-days/'+id+'/delete',{method:'POST'}); loadMd();
+};
+loadMd();
+$('md-form').onsubmit=async e=>{
+  e.preventDefault();
+  const values={};
+  document.querySelectorAll('#md-fields input').forEach(i=>{values[i.dataset.hd]=i.value;});
+  const r=await fetch('/api/admin/machine-days',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({date_from:$('md-from').value,date_to:$('md-to').value,values})});
+  const j=await r.json(); const m=$('md-msg');
+  m.className='msg '+(r.ok?'ok':'err');
+  m.textContent=r.ok?`Saved ${j.saved} division(s) for ${$('md-from').value}..${$('md-to').value}.`:(j.error||'Failed.');
+  if(r.ok){document.querySelectorAll('#md-fields input').forEach(i=>i.value='');loadMd();}
+};
+
+// ---------- uploads ----------
+async function loadUploads(){
+  const r=await fetch('/api/admin/uploads'); if(!r.ok) return;
+  const ups=await r.json();
+  $('up-rows').innerHTML=ups.length?ups.map(u=>`
+    <tr><td class="mono">${u.date_from} → ${u.date_to}</td><td>${u.filename}</td>
+        <td class="mono">${u.loaded_at}</td><td class="mono">${u.row_count.toLocaleString()}</td>
+        <td class="mono">${Math.round(u.total_value).toLocaleString()}</td>
+        <td>${u.warnings? u.warnings+' ⚠':'0'}</td></tr>`).join('')
+    :'<tr><td colspan="6" style="color:var(--muted)">No files loaded yet.</td></tr>';
+}
+loadUploads();
+$('up-form').onsubmit=async e=>{
+  e.preventDefault();
+  const f=$('up-file').files[0]; const m=$('up-msg');
+  if(!f){m.className='msg err';m.textContent='Choose the monthly .xlsx file first.';return;}
+  m.className='msg';m.textContent='Uploading and loading — this takes a minute for a full month…';
+  $('up-btn').disabled=true;
+  const fd=new FormData(); fd.append('file',f);
+  const r=await fetch('/api/admin/upload',{method:'POST',body:fd});
+  const j=await r.json();
+  $('up-btn').disabled=false;
+  m.className='msg '+(r.ok?'ok':'err');
+  m.textContent=r.ok?j.log:(j.error+(j.detail?' — '+j.detail:''));
+  if(r.ok){loadUploads();}
+};
+</script>
+</body>
+</html>
