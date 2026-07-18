@@ -71,6 +71,18 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
   </div>
 
   <div class="panel">
+    <h2>Email alert recipients</h2>
+    <form class="new" id="rc-form" style="align-items:end">
+      <div class="field" style="flex:2"><label>Email</label><input type="email" id="rc-email" placeholder="name@interloop-pk.com"></div>
+      <div class="field" style="max-width:170px"><label>Alerts for</label>
+        <select id="rc-hd"><option value="">All divisions</option></select></div>
+      <button type="submit">Add recipient</button>
+    </form>
+    <div class="msg" id="rc-msg"></div>
+    <table><thead><tr><th>Email</th><th>Receives</th><th></th></tr></thead><tbody id="rc-rows"></tbody></table>
+  </div>
+
+  <div class="panel">
     <h2>Cost / machine-day targets (per fiscal year)</h2>
     <form class="new" id="tg-form" style="align-items:end">
       <div class="field" style="max-width:130px"><label>Fiscal year</label><select id="tg-fy"></select></div>
@@ -160,6 +172,31 @@ $('new').onsubmit=e=>{e.preventDefault();
   e.target.reset(); $('hd-field').hidden=true;
 };
 load();
+
+// ---------- email recipients ----------
+(function(){
+  ['HD-1','HD-2','HD-3','HD-4','HD-5','HD-6'].forEach(h=>{
+    const o=document.createElement('option');o.value=o.textContent=h;$('rc-hd').appendChild(o);});
+  async function loadRc(){
+    const r=await fetch('/api/admin/recipients'); if(!r.ok) return;
+    const d=await r.json();
+    if(!d.mail_configured) $('rc-msg').textContent='SMTP not configured yet — add SMTP_HOST/PORT/USER/PASS/FROM in Railway Variables to actually send. Until then, would-be emails appear in the server log.';
+    $('rc-rows').innerHTML=d.recipients.length?d.recipients.map(x=>`
+      <tr><td class="mono">${x.email}</td><td>${x.hd_code||'All divisions'}</td>
+      <td style="text-align:right"><button onclick="delRc(${x.rid})">Remove</button></td></tr>`).join('')
+      :'<tr><td colspan="3" style="color:var(--muted)">No recipients yet.</td></tr>';
+  }
+  window.delRc=async id=>{await fetch('/api/admin/recipients/'+id+'/delete',{method:'POST'});loadRc();};
+  $('rc-form').onsubmit=async e=>{
+    e.preventDefault();
+    const r=await fetch('/api/admin/recipients',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:$('rc-email').value,hd_code:$('rc-hd').value||null})});
+    const j=await r.json(); const m=$('rc-msg');
+    m.className='msg '+(r.ok?'ok':'err'); m.textContent=r.ok?'Added.':(j.error||'Failed.');
+    if(r.ok){$('rc-email').value='';loadRc();}
+  };
+  loadRc();
+})();
 
 // ---------- targets ----------
 (function(){
