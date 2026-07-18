@@ -71,6 +71,22 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
   </div>
 
   <div class="panel">
+    <h2 style="color:var(--bleed)">Delete old data</h2>
+    <form class="new" id="pg-form" style="align-items:end">
+      <div class="field" style="max-width:140px"><label>Fiscal year</label>
+        <select id="pg-fy"><option value="">Custom</option></select></div>
+      <div class="field" style="max-width:140px"><label>From</label><input type="date" id="pg-from"></div>
+      <div class="field" style="max-width:140px"><label>To</label><input type="date" id="pg-to"></div>
+      <div class="field" style="max-width:170px"><label>Type DELETE to confirm</label><input id="pg-confirm" autocomplete="off"></div>
+      <label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted)">
+        <input type="checkbox" id="pg-md"> also machine days</label>
+      <button type="button" id="pg-preview">Preview</button>
+      <button type="submit" style="background:var(--bleed);color:#fff;border:none">Delete</button>
+    </form>
+    <div class="msg" id="pg-msg">For a whole year use Jan 1 – Dec 31. Take a backup of inventory.db first — this cannot be undone.</div>
+  </div>
+
+  <div class="panel">
     <h2>Add user</h2>
     <form class="new" id="new">
       <div class="field"><label>Username</label><input id="n-user" required></div>
@@ -134,6 +150,35 @@ $('new').onsubmit=e=>{e.preventDefault();
   e.target.reset(); $('hd-field').hidden=true;
 };
 load();
+
+// ---------- purge ----------
+(function(){
+  const sel=$('pg-fy'); const now=new Date();
+  const lastFy=(now.getMonth()+1>=7)?now.getFullYear():now.getFullYear()-1;
+  for(let y=2025;y<=lastFy;y++){
+    const o=document.createElement('option');
+    o.value=`${y}-07-01|${y+1}-06-30`;
+    o.textContent=`FY ${String(y).slice(2)}-${String(y+1).slice(2)}`;
+    sel.appendChild(o);
+  }
+  sel.onchange=()=>{ if(!sel.value)return; const [f,t]=sel.value.split('|'); $('pg-from').value=f; $('pg-to').value=t; };
+})();
+$('pg-preview').onclick=async()=>{
+  const r=await fetch(`/api/admin/purge-preview?from=${$('pg-from').value}&to=${$('pg-to').value}`);
+  const j=await r.json(); const m=$('pg-msg');
+  m.className='msg '+(r.ok?'':'err');
+  m.textContent=r.ok?`Would delete ${j.transactions.toLocaleString()} transactions (PKR ${Math.round(j.total_value).toLocaleString()}, dated ${j.first||'—'} to ${j.last||'—'}) and ${j.machine_day_entries} machine-day entrie(s) if ticked.`:(j.error||'Failed.');
+};
+$('pg-form').onsubmit=async e=>{
+  e.preventDefault();
+  const r=await fetch('/api/admin/purge',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({from:$('pg-from').value,to:$('pg-to').value,confirm:$('pg-confirm').value,
+                         include_machine_days:$('pg-md').checked})});
+  const j=await r.json(); const m=$('pg-msg');
+  m.className='msg '+(r.ok?'ok':'err');
+  m.textContent=r.ok?`Deleted ${j.deleted_transactions.toLocaleString()} transactions and ${j.deleted_machine_day_entries} machine-day entrie(s).`:(j.error||'Failed.');
+  if(r.ok){$('pg-confirm').value='';loadUploads();loadMd();}
+};
 
 // ---------- machine days (date-range based) ----------
 async function loadMd(){

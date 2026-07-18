@@ -117,6 +117,8 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
 <div class="wrap">
 
   <div class="controls">
+    <div class="field" style="max-width:150px"><label for="fy">Fiscal year</label>
+      <select id="fy"><option value="">Custom</option></select></div>
     <div class="field"><label for="from">From</label><input type="date" id="from"></div>
     <div class="field"><label for="to">To</label><input type="date" id="to"></div>
     <div class="field"><label for="f-hd">Division</label><select id="f-hd"><option value="">All</option></select></div>
@@ -193,6 +195,24 @@ async function init(){
   META=await (await fetch('/api/meta')).json();
   $('from').value=state.from=META.dates.min;
   $('to').value=state.to=META.dates.max;
+  // fiscal years: Jul->Jun, starting FY 25-26
+  const fySel=$('fy');
+  const lastDate=META.dates.max||new Date().toISOString().slice(0,10);
+  const lastFyStart=(+lastDate.slice(5,7)>=7)?+lastDate.slice(0,4):+lastDate.slice(0,4)-1;
+  for(let y=2025;y<=lastFyStart;y++){
+    const o=document.createElement('option');
+    o.value=`${y}-07-01|${y+1}-06-30`;
+    o.textContent=`FY ${String(y).slice(2)}-${String(y+1).slice(2)}`;
+    fySel.appendChild(o);
+  }
+  fySel.onchange=()=>{
+    if(!fySel.value) return;
+    const [f,t]=fySel.value.split('|');
+    $('from').value=f; $('to').value=t;
+    readControls(); render();
+  };
+  $('from').addEventListener('input',()=>fySel.value='');
+  $('to').addEventListener('input',()=>fySel.value='');
   fill('f-hd',META.hds); fill('f-maint',META.maint_types); fill('f-shift',META.shifts);
   fill('f-nature',META.natures); fill('f-category',META.categories); fill('f-model',META.models);
   if(ME.role==='plant'&&ME.hd_code){ $('f-hd').value=ME.hd_code; $('f-hd').disabled=true; }
@@ -338,6 +358,9 @@ function drawTable(cons){
   }
 }
 init();
+</script>
+<script>
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script>
 </body>
 </html>
