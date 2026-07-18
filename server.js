@@ -141,12 +141,19 @@ app.get('/api/kpi', requireAuth, (req, res) => {
     SELECT hd_code, ROUND(SUM(value),2) AS cost, COUNT(DISTINCT month_tag) AS months
     FROM v_consumption ${where} GROUP BY hd_code`).all(...params);
   const mdMap = machineDaysBetween(q.from, q.to);
+  const { fy, targets } = targetsForRange(q.from, q.to);
   res.json({
     period: { from: q.from || null, to: q.to || null },
-    rows: cost.map(r => ({
-      hd: r.hd_code, cost: r.cost, machine_days: mdMap[r.hd_code] || null,
-      cost_per_mday: mdMap[r.hd_code] ? +(r.cost / mdMap[r.hd_code]).toFixed(2) : null,
-    })).sort((a, b) => a.hd.localeCompare(b.hd)),
+    fy_label: fy !== null ? fyLabel(fy) : null,
+    rows: cost.map(r => {
+      const rate = mdMap[r.hd_code] ? +(r.cost / mdMap[r.hd_code]).toFixed(2) : null;
+      const tg = targets[r.hd_code];
+      return {
+        hd: r.hd_code, cost: r.cost, machine_days: mdMap[r.hd_code] || null,
+        cost_per_mday: rate, target: tg ?? null,
+        vs_target_pct: (rate !== null && tg) ? +((rate / tg - 1) * 100).toFixed(1) : null,
+      };
+    }).sort((a, b) => a.hd.localeCompare(b.hd)),
   });
 });
 
@@ -372,13 +379,213 @@ app.post('/api/admin/upload', requireRole('admin'), upload.single('file'), (req,
       return res.status(400).json({ error: 'Ingestion failed.', detail: msg.slice(0, 1200) });
     }
     // record the real filename on the newest upload row
-    const last = db.prepare('SELECT upload_id FROM uploads ORDER BY upload_id DESC LIMIT 1').get();
-    if (last) db.prepare('UPDATE uploads SET filename=? WHERE upload_id=?').run(orig, last.upload_id);
+    const last = db.prepare('SELECT upload_id, date_from, date_to FROM uploads ORDER BY upload_id DESC LIMIT 1').get();
+    if (last) {
+      db.prepare('UPDATE uploads SET filename=? WHERE upload_id=?').run(orig, last.upload_id);
+      if (last.date_from && last.date_to) generateAlerts(last.date_from, last.date_to);
+    }
     res.json({ ok: true, log: (stdout || '').slice(0, 1200) });
   });
 });
 
+
+// ---------- Admin: purge data for a date range (e.g. an old year) ----------
+app.get('/api/admin/purge-preview', requireRole('admin'), (req, res) => {
+  const { from, to } = req.query;
+  const DR = /^\d{4}-\d{2}-\d{2}$/;
+  if (!DR.test(from || '') || !DR.test(to || '') || from > to)
+    return res.status(400).json({ error: 'Valid From and To dates required (From ≤ To).' });
+  const t = db.prepare(`SELECT COUNT(*) AS n, ROUND(COALESCE(SUM(value),0),2) AS v,
+                               MIN(tran_date) AS d1, MAX(tran_date) AS d2
+                        FROM transactions WHERE tran_date BETWEEN ? AND ?`).get(from, to);
+  const md = db.prepare(`SELECT COUNT(*) AS n FROM machine_days WHERE date_from >= ? AND date_to <= ?`).get(from, to);
+  res.json({ transactions: t.n, total_value: t.v, first: t.d1, last: t.d2, machine_day_entries: md.n });
+});
+
+app.post('/api/admin/purge', requireRole('admin'), (req, res) => {
+  const { from, to, confirm, include_machine_days } = req.body || {};
+  const DR = /^\d{4}-\d{2}-\d{2}$/;
+  if (!DR.test(from || '') || !DR.test(to || '') || from > to)
+    return res.status(400).json({ error: 'Valid From and To dates required (From ≤ To).' });
+  if (confirm !== 'DELETE')
+    return res.status(400).json({ error: 'Type DELETE in the confirmation box to proceed.' });
+  const tx = db.transaction(() => {
+    const n = db.prepare('SELECT COUNT(*) AS n FROM transactions WHERE tran_date BETWEEN ? AND ?').get(from, to).n;
+    db.prepare('DELETE FROM transactions WHERE tran_date BETWEEN ? AND ?').run(from, to);
+    let mdn = 0;
+    if (include_machine_days) {
+      mdn = db.prepare('SELECT COUNT(*) AS n FROM machine_days WHERE date_from >= ? AND date_to <= ?').get(from, to).n;
+      db.prepare('DELETE FROM machine_days WHERE date_from >= ? AND date_to <= ?').run(from, to);
+    }
+    db.prepare(`DELETE FROM ingest_issues WHERE upload_id IN
+                (SELECT u.upload_id FROM uploads u
+                 WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.upload_id=u.upload_id))`).run();
+    db.prepare(`DELETE FROM uploads WHERE NOT EXISTS
+                (SELECT 1 FROM transactions t WHERE t.upload_id=uploads.upload_id)`).run();
+    return { n, mdn };
+  });
+  const r = tx();
+  res.json({ ok: true, deleted_transactions: r.n, deleted_machine_day_entries: r.mdn });
+});
+
+
+// ---------- Fiscal year helpers, targets, alerts, deviation ----------
+const fyOf = d => (+d.slice(5, 7) >= 7) ? +d.slice(0, 4) : +d.slice(0, 4) - 1;
+const fyLabel = y => `FY ${String(y).slice(2)}-${String(y + 1).slice(2)}`;
+
+function targetsForRange(from, to) {
+  if (!from || !to || fyOf(from) !== fyOf(to)) return { fy: null, targets: {} };  // single-FY ranges only
+  const fy = fyOf(from);
+  const t = Object.fromEntries(db.prepare('SELECT hd_code, target_rate FROM targets WHERE fy_start=?')
+                                 .all(fy).map(r => [r.hd_code, r.target_rate]));
+  return { fy, targets: t };
+}
+
+// Admin: targets CRUD
+app.get('/api/admin/targets', requireRole('admin'), (req, res) => {
+  const fy = parseInt(req.query.fy, 10);
+  if (!fy || fy < 2025) return res.status(400).json({ error: 'fy (start year, e.g. 2025) required.' });
+  const hds = db.prepare('SELECT DISTINCT hd_code FROM stores ORDER BY hd_code').all().map(r => r.hd_code);
+  const values = Object.fromEntries(db.prepare('SELECT hd_code, target_rate FROM targets WHERE fy_start=?')
+                                      .all(fy).map(r => [r.hd_code, r.target_rate]));
+  res.json({ fy, label: fyLabel(fy), hds, values });
+});
+app.post('/api/admin/targets', requireRole('admin'), (req, res) => {
+  const { fy, values } = req.body || {};
+  const y = parseInt(fy, 10);
+  if (!y || y < 2025) return res.status(400).json({ error: 'fy (start year, e.g. 2025) required.' });
+  const hds = new Set(db.prepare('SELECT DISTINCT hd_code FROM stores').all().map(r => r.hd_code));
+  const up = db.prepare(`INSERT INTO targets (fy_start, hd_code, target_rate) VALUES (?,?,?)
+                         ON CONFLICT(fy_start, hd_code) DO UPDATE SET target_rate=excluded.target_rate`);
+  let n = 0;
+  for (const [hd, v] of Object.entries(values || {})) {
+    if (!hds.has(hd) || v === '' || v === null || v === undefined) continue;
+    const num = Number(v);
+    if (!isFinite(num) || num <= 0) return res.status(400).json({ error: `Invalid target for ${hd}.` });
+    up.run(y, hd, num); n++;
+  }
+  res.json({ ok: true, saved: n });
+});
+
+// Alerts (scoped: plant users see their own HD only)
+app.get('/api/alerts', requireAuth, (req, res) => {
+  const scope = req.user.role === 'plant' && req.user.hd_code ? 'WHERE hd_code = ?' : '';
+  const args = scope ? [req.user.hd_code] : [];
+  const rows = db.prepare(`SELECT * FROM alerts ${scope} ORDER BY alert_id DESC LIMIT 20`).all(...args);
+  const unseen = db.prepare(`SELECT COUNT(*) AS n FROM alerts ${scope ? scope + ' AND' : 'WHERE'} seen=0`).all(...args)[0] || { n: 0 };
+  res.json({ unseen: unseen.n, alerts: rows });
+});
+app.post('/api/alerts/seen', requireAuth, (req, res) => {
+  const scope = req.user.role === 'plant' && req.user.hd_code ? 'WHERE hd_code = ?' : '';
+  db.prepare(`UPDATE alerts SET seen=1 ${scope}`).run(...(scope ? [req.user.hd_code] : []));
+  res.json({ ok: true });
+});
+
+// After an upload: compare the uploaded period's rate per HD against its FY target
+function generateAlerts(dateFrom, dateTo) {
+  try {
+    const { fy, targets } = targetsForRange(dateFrom, dateTo);
+    if (fy === null || !Object.keys(targets).length) return;
+    const mdays = machineDaysBetween(dateFrom, dateTo);
+    const cost = db.prepare(`SELECT s.hd_code AS hd, SUM(t.value) AS cost
+                             FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+                             WHERE t.tran_date BETWEEN ? AND ? GROUP BY s.hd_code`).all(dateFrom, dateTo);
+    const ins = db.prepare(`INSERT INTO alerts (hd_code, period_from, period_to, actual_rate, target_rate, message)
+                            VALUES (?,?,?,?,?,?)`);
+    for (const r of cost) {
+      const tg = targets[r.hd]; const md = mdays[r.hd];
+      if (!tg || !md) continue;
+      const rate = +(r.cost / md).toFixed(2);
+      if (rate > tg) {
+        const pct = ((rate / tg - 1) * 100).toFixed(1);
+        // headline attribution: which category and machine drove the excess in this period
+        const expected = tg * md;
+        const cats = db.prepare(`SELECT i.sp_category AS k, SUM(t.value) AS v
+          FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+          JOIN items i ON i.item_code=t.item_code
+          WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY i.sp_category`).all(r.hd, dateFrom, dateTo);
+        const total = cats.reduce((a, c) => a + c.v, 0) || 1;
+        const top = cats.map(c => ({ k: c.k, ex: c.v - (c.v / total) * expected }))
+                        .sort((a, b) => b.ex - a.ex)[0];
+        const mach = db.prepare(`SELECT s.store_name || ' · ' || m.short_desc AS k, SUM(t.value) AS v
+          FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+          JOIN machines m ON m.machine_id=t.machine_id
+          WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY t.machine_id
+          ORDER BY v DESC LIMIT 1`).get(r.hd, dateFrom, dateTo);
+        const why = top ? ` Biggest excess driver: ${top.k} (+${Math.round(top.ex).toLocaleString()}).` : '';
+        const who = mach ? ` Heaviest machine: ${mach.k} (${Math.round(mach.v).toLocaleString()}).` : '';
+        ins.run(r.hd, dateFrom, dateTo, rate, tg,
+          `${r.hd}: ${rate} PKR/machine day for ${dateFrom}..${dateTo} — ${pct}% ABOVE the ${fyLabel(fy)} target of ${tg}.${why}${who} See Target analysis for the full breakdown.`);
+      }
+    }
+  } catch (e) { console.error('alert generation failed:', e.message); }
+}
+
+// Deviation analysis: WHEN did the rate exceed target, and WHAT drove the excess
+app.get('/api/deviation', requireAuth, (req, res) => {
+  const q = scopeToUser(req);
+  const hd = q.hd;
+  const { from, to } = q;
+  const bucket = ['day', 'week', 'month'].includes(q.bucket) ? q.bucket : 'month';
+  if (!hd || !from || !to) return res.status(400).json({ error: 'hd, from and to are required.' });
+  const { fy, targets } = targetsForRange(from, to);
+  const target = fy !== null ? targets[hd] : undefined;
+  if (target === undefined)
+    return res.status(400).json({ error: 'No target set for this division/fiscal year (or the range spans two fiscal years).' });
+
+  const bucketExpr = bucket === 'day' ? 'tran_date'
+                   : bucket === 'week' ? "strftime('%Y-W%W', tran_date)"
+                   : "substr(tran_date,1,7)";
+  const rows = db.prepare(`
+    SELECT ${bucketExpr} AS b, MIN(tran_date) AS d1, MAX(tran_date) AS d2, SUM(t.value) AS cost
+    FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+    WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY ${bucketExpr} ORDER BY b`).all(hd, from, to);
+
+  const buckets = rows.map(r => {
+    const md = machineDaysBetween(r.d1, r.d2)[hd] || null;
+    const rate = md ? +(r.cost / md).toFixed(2) : null;
+    return { bucket: r.b, from: r.d1, to: r.d2, cost: +r.cost.toFixed(2), machine_days: md,
+             rate, target, above: rate !== null && rate > target,
+             deviation_pct: rate !== null ? +((rate / target - 1) * 100).toFixed(1) : null };
+  });
+
+  // Attribution over the above-target buckets: excess vs expected, split by category / machine
+  const above = buckets.filter(b => b.above);
+  let attribution = null;
+  if (above.length) {
+    const ranges = above.map(b => [b.from, b.to]);
+    const inRange = ranges.map(() => '(t.tran_date BETWEEN ? AND ?)').join(' OR ');
+    const rparams = ranges.flat();
+    const mdW = above.reduce((a, b) => a + (b.machine_days || 0), 0);
+    const actualW = above.reduce((a, b) => a + b.cost, 0);
+    const expectedW = target * mdW;
+    // baseline shares from the WHOLE selected period for this HD
+    const base = db.prepare(`SELECT i.sp_category AS k, SUM(t.value) AS v
+      FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code JOIN items i ON i.item_code=t.item_code
+      WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY i.sp_category`).all(hd, from, to);
+    const baseTotal = base.reduce((a, r) => a + r.v, 0) || 1;
+    const share = Object.fromEntries(base.map(r => [r.k, r.v / baseTotal]));
+    const catW = db.prepare(`SELECT i.sp_category AS k, SUM(t.value) AS v
+      FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code JOIN items i ON i.item_code=t.item_code
+      WHERE s.hd_code=? AND (${inRange}) GROUP BY i.sp_category`).all(hd, ...rparams);
+    const categories = catW.map(r => ({
+      category: r.k, actual: +r.v.toFixed(2),
+      expected: +((share[r.k] || 0) * expectedW).toFixed(2),
+      excess: +(r.v - (share[r.k] || 0) * expectedW).toFixed(2),
+    })).sort((a, b) => b.excess - a.excess).slice(0, 10);
+    const machines = db.prepare(`SELECT s.store_name || ' · ' || m.short_desc AS k, SUM(t.value) AS v, COUNT(*) AS n
+      FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code JOIN machines m ON m.machine_id=t.machine_id
+      WHERE s.hd_code=? AND (${inRange}) GROUP BY t.machine_id ORDER BY v DESC LIMIT 10`).all(hd, ...rparams)
+      .map(r => ({ machine: r.k, cost: +r.v.toFixed(2), txns: r.n }));
+    attribution = {
+      windows: above.map(b => b.bucket),
+      actual: +actualW.toFixed(2), expected: +expectedW.toFixed(2),
+      excess: +(actualW - expectedW).toFixed(2),
+      by_category: categories, top_machines: machines,
+    };
+  }
+  res.json({ hd, fy_label: fyLabel(fy), target, bucket, buckets, attribution });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Spares dashboard on http://localhost:${PORT}`));
-
-
