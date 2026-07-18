@@ -24,7 +24,15 @@ a{color:var(--indigo)}
 header{background:var(--indigo);color:#fff;padding:14px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
 header h1{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:.4px;text-transform:uppercase}
 header .sub{font-size:12px;opacity:.75}
-header .who{margin-left:auto;font-size:12.5px;display:flex;gap:10px;align-items:center}
+#bell{margin-left:auto;background:none;border:none;cursor:pointer;font-size:17px;position:relative;color:#fff}
+.bell-n{position:absolute;top:-4px;right:-7px;background:var(--bleed);color:#fff;border-radius:99px;font-size:10px;padding:1px 5px;font-family:var(--mono)}
+#alerts-box{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-top:10px;padding:10px 14px}
+#alerts-box .al{font-size:12.5px;padding:6px 0;border-bottom:1px solid #F0F2F5;color:var(--ink)}
+#alerts-box .al b{color:var(--bleed)}
+.kpi .tgt{font-size:11px;font-family:var(--mono);margin-top:2px}
+.kpi .tgt.over{color:var(--bleed);font-weight:600}
+.kpi .tgt.under{color:#1E7B3C}
+header .who{font-size:12.5px;display:flex;gap:10px;align-items:center}
 header .who .badge{background:rgba(255,255,255,.15);border-radius:99px;padding:2px 10px;font-size:11.5px}
 header .who a,header .who button{color:#C9D2E6;background:none;border:none;cursor:pointer;font-size:12.5px;text-decoration:underline;padding:0}
 
@@ -111,6 +119,7 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
 <header>
   <h1>Spares Ledger</h1>
   <span class="sub">Interloop · Knitting · spare-parts consumption</span>
+  <button id="bell" title="Alerts" hidden>🔔<span id="bell-n" class="bell-n" hidden></span></button>
   <span class="who" id="who"></span>
 </header>
 
@@ -131,6 +140,7 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
   </div>
 
   <div class="chips" id="chips"></div>
+  <div id="alerts-box" hidden></div>
 
   <div class="kpis" id="kpis"></div>
   <div class="kpis-note" id="kpis-note"></div>
@@ -138,9 +148,21 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
   <div class="viewbar" id="viewbar">
     <button data-v="rank" class="on">Ranking</button>
     <button data-v="compare" id="compare-tab">Plant comparison</button>
+    <button data-v="targets" id="targets-tab">Target analysis</button>
   </div>
 
   <div class="groupbar" id="groupbar"></div>
+
+  <div class="panel" id="targets-panel" hidden>
+    <div class="panel-head">
+      <h2>Target analysis</h2>
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="tga-hd"></select>
+        <select id="tga-bucket"><option value="month">Monthly</option><option value="week">Weekly</option><option value="day">Daily</option></select>
+      </span>
+    </div>
+    <div id="tga-holder"></div>
+  </div>
 
   <div class="panel" id="compare-panel" hidden>
     <div class="panel-head">
@@ -224,6 +246,28 @@ async function init(){
   }
   $('apply').onclick=()=>{readControls(); render();};
   if(ME.role==='plant'){ $('compare-tab').style.display='none'; }
+  // alerts bell
+  async function loadAlerts(){
+    const r=await fetch('/api/alerts'); if(!r.ok) return;
+    const d=await r.json();
+    $('bell').hidden=false;
+    $('bell-n').hidden=!d.unseen; $('bell-n').textContent=d.unseen;
+    $('bell').onclick=async()=>{
+      const box=$('alerts-box');
+      if(!box.hidden){box.hidden=true;return;}
+      box.hidden=false;
+      box.innerHTML=d.alerts.length?d.alerts.map(a=>`<div class="al"><b>⚠</b> ${a.message} <span style="color:var(--muted)">(${a.created_at})</span></div>`).join('')
+        :'<div class="al">No alerts yet — they appear when an upload pushes a division above its fiscal-year target.</div>';
+      await fetch('/api/alerts/seen',{method:'POST'});
+      $('bell-n').hidden=true;
+    };
+  }
+  loadAlerts();
+  // targets view controls
+  const tgaHd=$('tga-hd');
+  (META.hds||[]).forEach(h=>{const o=document.createElement('option');o.value=o.textContent=h;tgaHd.appendChild(o);});
+  if(ME.role==='plant'&&ME.hd_code){tgaHd.value=ME.hd_code;tgaHd.disabled=true;}
+  tgaHd.onchange=render; $('tga-bucket').onchange=render;
   document.querySelectorAll('.viewbar button').forEach(b=>b.onclick=()=>{
     state.view=b.dataset.v;
     document.querySelectorAll('.viewbar button').forEach(x=>x.classList.toggle('on',x===b));
@@ -257,9 +301,18 @@ async function render(){
     x.onclick=()=>{delete state.filters[k]; syncSelects(); render();};
     c.appendChild(x); chips.appendChild(c);
   }
-  const isCmp = state.view==='compare';
-  $('rank-panel').hidden=isCmp; $('compare-panel').hidden=!isCmp;
-  $('groupbar').style.display=isCmp?'none':'flex';
+  const isCmp = state.view==='compare', isTga = state.view==='targets';
+  $('rank-panel').hidden=isCmp||isTga; $('compare-panel').hidden=!isCmp; $('targets-panel').hidden=!isTga;
+  $('groupbar').style.display=(isCmp||isTga)?'none':'flex';
+  if(isTga){
+    const kpi=await (await fetch('/api/kpi?'+qs())).json();
+    drawKpis(kpi);
+    const p=new URLSearchParams({from:state.from,to:state.to,hd:$('tga-hd').value,bucket:$('tga-bucket').value});
+    const r=await fetch('/api/deviation?'+p.toString());
+    const d=await r.json();
+    drawTargets(d, r.ok);
+    return;
+  }
   if(isCmp){
     const kpi=await (await fetch('/api/kpi?'+qs())).json();
     drawKpis(kpi);
@@ -274,6 +327,37 @@ async function render(){
     (await fetch('/api/consumption?'+qs())).json(),
   ]);
   drawKpis(kpi); drawTable(cons);
+}
+
+function drawTargets(d, ok){
+  const h=$('tga-holder');
+  if(!ok){h.innerHTML=`<div class="empty">${d.error||'Failed.'}</div>`;return;}
+  const rows=d.buckets.map(b=>`
+    <tr>
+      <td class="key">${b.bucket}</td>
+      <td class="num">${fmt(b.cost)}</td>
+      <td class="num">${b.machine_days==null?'—':fmt(b.machine_days)}</td>
+      <td class="num" style="font-weight:600;color:${b.above?'var(--bleed)':'#1E7B3C'}">${b.rate==null?'—':b.rate.toFixed(2)}</td>
+      <td class="num">${d.target.toFixed(2)}</td>
+      <td class="num" style="color:${b.above?'var(--bleed)':'#1E7B3C'}">${b.deviation_pct==null?'—':(b.deviation_pct>0?'+':'')+b.deviation_pct+'%'}</td>
+    </tr>`).join('');
+  let att='';
+  if(d.attribution){
+    const a=d.attribution;
+    att=`<div style="padding:12px 14px;border-top:1px solid var(--line)">
+      <div style="font-family:var(--display);font-weight:700;margin-bottom:4px">Where the excess came from (${a.windows.join(', ')})</div>
+      <div style="font-family:var(--mono);font-size:12.5px;margin-bottom:8px">Actual ${fmt(a.actual)} vs expected at target ${fmt(a.expected)} → excess <b style="color:var(--bleed)">${fmt(a.excess)}</b> PKR</div>
+      <table><thead><tr><th>Category</th><th class="num">Actual</th><th class="num">Expected</th><th class="num">Excess</th></tr></thead>
+      <tbody>${a.by_category.map(c=>`<tr><td class="key">${c.category}</td><td class="num">${fmt(c.actual)}</td><td class="num">${fmt(c.expected)}</td>
+        <td class="num" style="color:${c.excess>0?'var(--bleed)':'#1E7B3C'};font-weight:600">${c.excess>0?'+':''}${fmt(c.excess)}</td></tr>`).join('')}</tbody></table>
+      <div style="font-family:var(--display);font-weight:700;margin:12px 0 4px">Top machines in the deviating window</div>
+      <table><thead><tr><th>Machine</th><th class="num">Cost</th><th class="num">Issuances</th></tr></thead>
+      <tbody>${a.top_machines.map(m=>`<tr><td class="key">${m.machine}</td><td class="num">${fmt(m.cost)}</td><td class="num">${fmt(m.txns)}</td></tr>`).join('')}</tbody></table>
+    </div>`;
+  } else {
+    att=`<div style="padding:12px 14px;color:#1E7B3C;font-size:13px">No bucket exceeded the ${d.fy_label} target of ${d.target} — within budget for this period. ✓</div>`;
+  }
+  h.innerHTML=`<table><thead><tr><th>${d.bucket}</th><th class="num">Cost</th><th class="num">Machine days</th><th class="num">Rate</th><th class="num">Target</th><th class="num">Deviation</th></tr></thead><tbody>${rows}</tbody></table>`+att;
 }
 
 function drawCompare(cmp){
@@ -311,9 +395,11 @@ function drawKpis(kpi){
   kpi.rows.forEach(r=>{
     const d=document.createElement('div');
     d.className='kpi'+(r.cost_per_mday===max&&max>0?' top':'');
+    const tgt = r.target!=null && r.vs_target_pct!=null
+      ? `<div class="tgt ${r.vs_target_pct>0?'over':'under'}">target ${r.target.toFixed(2)} · ${r.vs_target_pct>0?'+':''}${r.vs_target_pct}%</div>` : '';
     d.innerHTML=`<div class="hd">${r.hd}</div>
       <div class="rate">${r.cost_per_mday==null?'—':r.cost_per_mday.toFixed(2)} <small>/ machine day</small></div>
-      <div class="cost">${fmt(r.cost)} PKR</div>`;
+      <div class="cost">${fmt(r.cost)} PKR</div>${tgt}`;
     d.title='Filter to '+r.hd;
     d.onclick=()=>{state.filters.hd=r.hd; syncSelects(); state.group_by='store'; render();};
     box.appendChild(d);

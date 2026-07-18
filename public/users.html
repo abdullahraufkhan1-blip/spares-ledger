@@ -71,6 +71,16 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
   </div>
 
   <div class="panel">
+    <h2>Cost / machine-day targets (per fiscal year)</h2>
+    <form class="new" id="tg-form" style="align-items:end">
+      <div class="field" style="max-width:130px"><label>Fiscal year</label><select id="tg-fy"></select></div>
+      <div id="tg-fields" style="display:flex;gap:10px;flex-wrap:wrap;flex:3"></div>
+      <button type="submit">Save targets</button>
+    </form>
+    <div class="msg" id="tg-msg">Targets are PKR per machine day. New uploads are checked against them; the dashboard shows every rate vs target.</div>
+  </div>
+
+  <div class="panel">
     <h2 style="color:var(--bleed)">Delete old data</h2>
     <form class="new" id="pg-form" style="align-items:end">
       <div class="field" style="max-width:140px"><label>Fiscal year</label>
@@ -150,6 +160,34 @@ $('new').onsubmit=e=>{e.preventDefault();
   e.target.reset(); $('hd-field').hidden=true;
 };
 load();
+
+// ---------- targets ----------
+(function(){
+  const sel=$('tg-fy'); const now=new Date();
+  const lastFy=(now.getMonth()+1>=7)?now.getFullYear():now.getFullYear()-1;
+  for(let y=2025;y<=lastFy+1;y++){                    // allow setting next FY's targets in advance
+    const o=document.createElement('option'); o.value=y;
+    o.textContent=`FY ${String(y).slice(2)}-${String(y+1).slice(2)}`; sel.appendChild(o);
+  }
+  async function loadTg(){
+    const r=await fetch('/api/admin/targets?fy='+sel.value); if(!r.ok) return;
+    const d=await r.json();
+    $('tg-fields').innerHTML=d.hds.map(h=>`
+      <div class="field" style="max-width:110px"><label>${h}</label>
+        <input type="number" step="0.01" min="0" data-hd="${h}" value="${d.values[h]??''}" placeholder="—"></div>`).join('');
+  }
+  sel.onchange=loadTg; loadTg();
+  $('tg-form').onsubmit=async e=>{
+    e.preventDefault();
+    const values={};
+    document.querySelectorAll('#tg-fields input').forEach(i=>{values[i.dataset.hd]=i.value;});
+    const r=await fetch('/api/admin/targets',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({fy:+sel.value,values})});
+    const j=await r.json(); const m=$('tg-msg');
+    m.className='msg '+(r.ok?'ok':'err');
+    m.textContent=r.ok?`Saved ${j.saved} target(s).`:(j.error||'Failed.');
+  };
+})();
 
 // ---------- purge ----------
 (function(){
