@@ -13,6 +13,52 @@ if (!fs0.existsSync(DB_PATH)) {
   console.log('Seeded database at', DB_PATH);
 }
 const db = new Database(DB_PATH, { readonly: false });
+
+// ---------- Startup migrations: upgrade whatever schema the volume DB has ----------
+function migrate() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS targets (
+      fy_start INTEGER NOT NULL, hd_code TEXT NOT NULL, target_rate REAL NOT NULL,
+      PRIMARY KEY (fy_start, hd_code));
+    CREATE TABLE IF NOT EXISTS alerts (
+      alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      hd_code TEXT NOT NULL, period_from TEXT NOT NULL, period_to TEXT NOT NULL,
+      actual_rate REAL NOT NULL, target_rate REAL NOT NULL,
+      message TEXT NOT NULL, seen INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS alert_recipients (
+      rid INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL UNIQUE, hd_code TEXT);
+  `);
+  // uploads: date-range columns
+  const upCols = db.prepare('PRAGMA table_info(uploads)').all().map(c => c.name);
+  if (!upCols.includes('date_from')) {
+    db.exec('ALTER TABLE uploads ADD COLUMN date_from TEXT; ALTER TABLE uploads ADD COLUMN date_to TEXT');
+    db.exec(`UPDATE uploads SET
+      date_from=(SELECT MIN(tran_date) FROM transactions t WHERE t.upload_id=uploads.upload_id),
+      date_to  =(SELECT MAX(tran_date) FROM transactions t WHERE t.upload_id=uploads.upload_id)`);
+    console.log('migrated: uploads -> date ranges');
+  }
+  // machine_days: month-based -> date-range
+  const mdCols = db.prepare('PRAGMA table_info(machine_days)').all().map(c => c.name);
+  if (mdCols.length && !mdCols.includes('date_from')) {
+    db.exec('DROP VIEW IF EXISTS v_hd_machine_day_cost');
+    db.exec(`CREATE TABLE machine_days_new (
+      entry_id INTEGER PRIMARY KEY AUTOINCREMENT, hd_code TEXT NOT NULL,
+      date_from TEXT NOT NULL, date_to TEXT NOT NULL, machine_days REAL NOT NULL,
+      CHECK (date_from <= date_to))`);
+    const lastDay = m => new Date(Date.UTC(+m.slice(0,4), +m.slice(5,7), 0)).getUTCDate();
+    for (const r of db.prepare('SELECT month_tag, hd_code, machine_days FROM machine_days').all()) {
+      db.prepare('INSERT INTO machine_days_new (hd_code, date_from, date_to, machine_days) VALUES (?,?,?,?)')
+        .run(r.hd_code, r.month_tag + '-01', r.month_tag + '-' + String(lastDay(r.month_tag)).padStart(2, '0'), r.machine_days);
+    }
+    db.exec('DROP TABLE machine_days; ALTER TABLE machine_days_new RENAME TO machine_days');
+    console.log('migrated: machine_days -> date ranges');
+  }
+  db.exec('DROP VIEW IF EXISTS v_hd_machine_day_cost');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_md_range ON machine_days(hd_code, date_from, date_to)');
+}
+migrate();
+
 db.pragma('journal_mode = WAL');
 
 const { setupAuth, requireAuth, requireRole } = require('./auth');
