@@ -483,6 +483,7 @@ app.post('/api/alerts/seen', requireAuth, (req, res) => {
 
 // After an upload: compare the uploaded period's rate per HD against its FY target
 function generateAlerts(dateFrom, dateTo) {
+  const created = [];
   try {
     const { fy, targets } = targetsForRange(dateFrom, dateTo);
     if (fy === null || !Object.keys(targets).length) return;
@@ -514,11 +515,13 @@ function generateAlerts(dateFrom, dateTo) {
           ORDER BY v DESC LIMIT 1`).get(r.hd, dateFrom, dateTo);
         const why = top ? ` Biggest excess driver: ${top.k} (+${Math.round(top.ex).toLocaleString()}).` : '';
         const who = mach ? ` Heaviest machine: ${mach.k} (${Math.round(mach.v).toLocaleString()}).` : '';
-        ins.run(r.hd, dateFrom, dateTo, rate, tg,
-          `${r.hd}: ${rate} PKR/machine day for ${dateFrom}..${dateTo} — ${pct}% ABOVE the ${fyLabel(fy)} target of ${tg}.${why}${who} See Target analysis for the full breakdown.`);
+        const message = `${r.hd}: ${rate} PKR/machine day for ${dateFrom}..${dateTo} — ${pct}% ABOVE the ${fyLabel(fy)} target of ${tg}.${why}${who} See Target analysis for the full breakdown.`;
+        ins.run(r.hd, dateFrom, dateTo, rate, tg, message);
+        created.push({ hd: r.hd, pct, message });
       }
     }
   } catch (e) { console.error('alert generation failed:', e.message); }
+  emailAlerts(created);
 }
 
 // Deviation analysis: WHEN did the rate exceed target, and WHAT drove the excess
@@ -585,6 +588,67 @@ app.get('/api/deviation', requireAuth, (req, res) => {
     };
   }
   res.json({ hd, fy_label: fyLabel(fy), target, bucket, buckets, attribution });
+});
+
+
+// ---------- Email alerts ----------
+// Configure in Railway Variables: SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASS,
+// SMTP_FROM ("Spares Ledger <alerts@yourdomain>"). Unconfigured -> emails are logged, not sent.
+const nodemailer = require('nodemailer');
+const mailReady = !!process.env.SMTP_HOST;
+const mailer = mailReady
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: +(process.env.SMTP_PORT || 587),
+      secure: +(process.env.SMTP_PORT || 587) === 465,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    })
+  : nodemailer.createTransport({ jsonTransport: true });   // dry-run mode
+
+function emailAlerts(newAlerts) {
+  if (!newAlerts.length) return;
+  const recips = db.prepare('SELECT email, hd_code FROM alert_recipients').all();
+  if (!recips.length) return;
+  const byEmail = new Map();
+  for (const r of recips) {
+    const mine = newAlerts.filter(a => !r.hd_code || a.hd === r.hd_code);
+    if (mine.length) byEmail.set(r.email, mine);
+  }
+  for (const [email, list] of byEmail) {
+    const subject = `⚠ Spares Ledger: ${list.length === 1
+      ? list[0].hd + ' above target (' + list[0].pct + '%)'
+      : list.length + ' divisions above target'}`;
+    const html = `<div style="font-family:sans-serif;max-width:640px">
+      <div style="background:#23386B;color:#fff;padding:12px 16px;font-weight:700">SPARES LEDGER — TARGET ALERT</div>
+      <div style="padding:14px 16px;border:1px solid #DDE1E7;border-top:none">
+        ${list.map(a => `<p style="margin:0 0 12px">${a.message}</p>`).join('')}
+        <p style="color:#69707C;font-size:13px">Open the app → Target analysis for the full breakdown.</p>
+      </div></div>`;
+    mailer.sendMail({ from: process.env.SMTP_FROM || 'Spares Ledger <alerts@localhost>',
+                      to: email, subject, html })
+      .then(info => { if (!mailReady) console.log('[dry-run email to', email + ']', subject); })
+      .catch(err => console.error('email to', email, 'failed:', err.message));
+  }
+}
+
+// Admin: manage recipients
+app.get('/api/admin/recipients', requireRole('admin'), (req, res) => {
+  res.json({ mail_configured: mailReady,
+             recipients: db.prepare('SELECT * FROM alert_recipients ORDER BY email').all() });
+});
+app.post('/api/admin/recipients', requireRole('admin'), (req, res) => {
+  const { email, hd_code } = req.body || {};
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || ''))
+    return res.status(400).json({ error: 'Enter a valid email address.' });
+  try {
+    db.prepare('INSERT INTO alert_recipients (email, hd_code) VALUES (?,?)')
+      .run(String(email).trim().toLowerCase(), hd_code || null);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: 'That email is already on the list.' }); }
+});
+app.post('/api/admin/recipients/:id/delete', requireRole('admin'), (req, res) => {
+  db.prepare('DELETE FROM alert_recipients WHERE rid=?').run(+req.params.id);
+  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 3000;
