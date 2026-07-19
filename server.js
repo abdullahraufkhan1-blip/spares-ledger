@@ -13,6 +13,12 @@ if (!fs0.existsSync(DB_PATH)) {
   console.log('Seeded database at', DB_PATH);
 }
 const db = new Database(DB_PATH, { readonly: false });
+// Performance: big page cache, memory-mapped reads, in-memory temp tables.
+db.pragma('journal_mode = WAL');
+db.pragma('cache_size = -65536');      // 64 MB page cache
+db.pragma('mmap_size = 268435456');    // 256 MB memory-mapped reads
+db.pragma('temp_store = MEMORY');
+db.pragma('synchronous = NORMAL');
 
 // ---------- Startup migrations: upgrade whatever schema the volume DB has ----------
 function migrate() {
@@ -56,6 +62,11 @@ function migrate() {
   }
   db.exec('DROP VIEW IF EXISTS v_hd_machine_day_cost');
   db.exec('CREATE INDEX IF NOT EXISTS idx_md_range ON machine_days(hd_code, date_from, date_to)');
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_cover_wh
+             ON transactions(tran_date, warehouse_code, qty_iss, value)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_cover_item
+             ON transactions(tran_date, item_code, qty_iss, value)`);
+  db.exec('ANALYZE');
   db.exec(`CREATE TABLE IF NOT EXISTS downtime (
     dt_id INTEGER PRIMARY KEY AUTOINCREMENT,
     hd_code TEXT NOT NULL,
@@ -92,19 +103,67 @@ function scopeToUser(req) {
   return q;
 }
 
+
+// ---------- Lean query builder: join only the tables a query needs ----------
+const COLSRC = {  // column -> { table, expr }
+  hd_code:      { t: 's', e: 's.hd_code' },
+  unit_code:    { t: 's', e: 's.unit_code' },
+  store_name:   { t: 's', e: 's.store_name' },
+  cost_center:  { t: 'c', e: 'COALESCE(c.cc_name, t.cc_code)' },
+  model:        { t: 'mm', e: 'mm.model_display' },
+  short_desc:   { t: 'm', e: 'm.short_desc' },
+  item_code:    { t: '', e: 't.item_code' },
+  item_description: { t: 'i', e: 'i.description' },
+  sp_nature:    { t: 'i', e: 'i.sp_nature' },
+  sp_category:  { t: 'i', e: 'i.sp_category' },
+  maint_type:   { t: '', e: 't.maint_type' },
+  shift:        { t: '', e: 't.shift' },
+};
+const JOINS = {
+  s:  'JOIN stores s ON s.warehouse_code = t.warehouse_code',
+  i:  'JOIN items i ON i.item_code = t.item_code',
+  m:  'JOIN machines m ON m.machine_id = t.machine_id',
+  mm: 'JOIN machines m2u ON m2u.machine_id = t.machine_id LEFT JOIN machine_models mm ON mm.model_key = m2u.model_key',
+  c:  'LEFT JOIN cost_centers c ON c.cc_code = t.cc_code',
+};
+function leanQuery(q, groupExprCols) {
+  const need = new Set();
+  const conds = [], params = [];
+  if (q.from) { conds.push('t.tran_date >= ?'); params.push(q.from); }
+  if (q.to)   { conds.push('t.tran_date <= ?'); params.push(q.to); }
+  for (const [key, col] of Object.entries(FILTERS)) {
+    if (!q[key]) continue;
+    const src = COLSRC[col];
+    if (src && src.t) need.add(src.t);
+    const expr = src ? src.e : col;
+    const vals = String(q[key]).split('||');
+    conds.push(`${expr} IN (${vals.map(() => '?').join(',')})`);
+    params.push(...vals);
+  }
+  for (const c of groupExprCols) {
+    const src = COLSRC[c];
+    if (src && src.t) need.add(src.t);
+  }
+  if (need.has('mm') && need.has('m')) need.delete('mm');           // m covers model via join below
+  let joins = [...need].map(k => JOINS[k]).join(' ');
+  if (need.has('m') && groupExprCols.includes('model'))
+    joins += ' LEFT JOIN machine_models mm ON mm.model_key = m.model_key';
+  return { joins, where: conds.length ? 'WHERE ' + conds.join(' AND ') : '', params };
+}
+
 // group_by whitelist: UI key -> column in v_consumption
 const GROUPS = {
-  hd:          { col: 'hd_code',                        label: 'Hosiery Division' },
-  unit:        { col: "hd_code || ' ' || unit_code",    label: 'Unit' },
-  store:       { col: 'store_name',                     label: 'Store' },
-  cost_center: { col: 'cost_center',                    label: 'Cost Center' },
-  model:       { col: 'model',                          label: 'Machine Model' },
-  machine:     { col: "store_name || ' · ' || short_desc", label: 'Machine' },
-  nature:      { col: 'sp_nature',                      label: 'Nature' },
-  category:    { col: 'sp_category',                    label: 'Category' },
-  maint_type:  { col: 'maint_type',                     label: 'Maint Type' },
-  shift:       { col: 'shift',                          label: 'Shift' },
-  item:        { col: 'item_code',                      label: 'Item', desc: 'item_description' },
+  hd:          { col: 'hd_code',                        srcs: ['hd_code'],               lean: 's.hd_code',                              label: 'Hosiery Division' },
+  unit:        { col: "hd_code || ' ' || unit_code",    srcs: ['hd_code','unit_code'],   lean: "s.hd_code || ' ' || s.unit_code",        label: 'Unit' },
+  store:       { col: 'store_name',                     srcs: ['store_name'],            lean: 's.store_name',                           label: 'Store' },
+  cost_center: { col: 'cost_center',                    srcs: ['cost_center'],           lean: 'COALESCE(c.cc_name, t.cc_code)',         label: 'Cost Center' },
+  model:       { col: 'model',                          srcs: ['model'],                 lean: 'mm.model_display',                        label: 'Machine Model' },
+  machine:     { col: "store_name || ' · ' || short_desc", srcs: ['store_name','short_desc'], lean: "s.store_name || ' · ' || m.short_desc", label: 'Machine' },
+  nature:      { col: 'sp_nature',                      srcs: ['sp_nature'],             lean: 'i.sp_nature',                            label: 'Nature' },
+  category:    { col: 'sp_category',                    srcs: ['sp_category'],           lean: 'i.sp_category',                          label: 'Category' },
+  maint_type:  { col: 'maint_type',                     srcs: ['maint_type'],            lean: 't.maint_type',                           label: 'Maint Type' },
+  shift:       { col: 'shift',                          srcs: ['shift'],                 lean: 't.shift',                                label: 'Shift' },
+  item:        { col: 'item_code',                      srcs: ['item_code'],             lean: 't.item_code',                            label: 'Item', desc: 'item_description', leanDesc: 'MIN(i.description)', descSrc: 'item_description' },
 };
 
 // filter whitelist: query param -> column
@@ -167,9 +226,12 @@ function machineDaysBetween(from, to) {
 }
 
 // Dimension values + date bounds for the filter UI
+let META_CACHE = null;
+function bustMeta() { META_CACHE = null; }
 app.get('/api/meta', requireAuth, (req, res) => {
+  if (META_CACHE) return res.json(META_CACHE);
   const one = (sql) => db.prepare(sql).all().map(r => Object.values(r)[0]);
-  res.json({
+  const payload = {
     dates: db.prepare('SELECT MIN(tran_date) AS min, MAX(tran_date) AS max FROM transactions').get(),
     months: one('SELECT DISTINCT month_tag FROM transactions ORDER BY 1'),
     hds: one('SELECT DISTINCT hd_code FROM stores ORDER BY 1'),
@@ -182,7 +244,9 @@ app.get('/api/meta', requireAuth, (req, res) => {
     maint_types: one('SELECT DISTINCT maint_type FROM transactions ORDER BY 1'),
     shifts: one('SELECT DISTINCT shift FROM transactions ORDER BY 1'),
     groups: Object.fromEntries(Object.entries(GROUPS).map(([k, v]) => [k, v.label])),
-  });
+  };
+  META_CACHE = payload;
+  res.json(payload);
 });
 
 // Core: grouped, ranked bleed
@@ -190,29 +254,32 @@ app.get('/api/consumption', requireAuth, (req, res) => {
   const q = scopeToUser(req);
   const g = GROUPS[q.group_by || 'hd'];
   if (!g) return res.status(400).json({ error: 'unknown group_by' });
-  const { where, params } = whereClause(q);
   const limit = Math.min(parseInt(q.limit || '100', 10), 1000);
+  const groupCols = [...g.srcs, ...(g.descSrc ? [g.descSrc] : [])];
+  const { joins, where, params } = leanQuery(q, groupCols);
   const rows = db.prepare(`
-    SELECT ${g.col} AS key,
-           ${g.desc ? `MIN(${g.desc}) AS desc,` : ''}
+    SELECT ${g.lean} AS key,
+           ${g.leanDesc ? `${g.leanDesc} AS desc,` : ''}
            COUNT(*) AS txns,
-           SUM(qty_iss) AS qty,
-           ROUND(SUM(value), 2) AS cost
-    FROM v_consumption ${where}
-    GROUP BY ${g.col}
+           SUM(t.qty_iss) AS qty,
+           ROUND(SUM(t.value), 2) AS cost
+    FROM transactions t ${joins} ${where}
+    GROUP BY ${g.lean}
     ORDER BY cost DESC
     LIMIT ${limit}`).all(...params);
-  const total = db.prepare(`SELECT ROUND(SUM(value),2) AS t, COUNT(*) AS n FROM v_consumption ${where}`).get(...params);
+  const tq = leanQuery(q, []);
+  const total = db.prepare(`SELECT ROUND(SUM(t.value),2) AS t, COUNT(*) AS n
+                            FROM transactions t ${tq.joins} ${tq.where}`).get(...tq.params);
   res.json({ group_label: g.label, total_cost: total.t || 0, total_txns: total.n, rows });
 });
 
 // KPI: cost per machine day per HD (months intersecting the range)
 app.get('/api/kpi', requireAuth, (req, res) => {
   const q = scopeToUser(req);
-  const { where, params } = whereClause(q);
+  const { joins, where, params } = leanQuery(q, ['hd_code']);
   const cost = db.prepare(`
-    SELECT hd_code, ROUND(SUM(value),2) AS cost, COUNT(DISTINCT month_tag) AS months
-    FROM v_consumption ${where} GROUP BY hd_code`).all(...params);
+    SELECT s.hd_code, ROUND(SUM(t.value),2) AS cost
+    FROM transactions t ${joins} ${where} GROUP BY s.hd_code`).all(...params);
   const mdMap = machineDaysBetween(q.from, q.to);
   const { fy, targets } = targetsForRange(q.from, q.to);
   res.json({
@@ -575,6 +642,7 @@ app.post('/api/admin/upload', requireRole('admin'), upload.single('file'), (req,
       db.prepare('UPDATE uploads SET filename=? WHERE upload_id=?').run(orig, last.upload_id);
       if (last.date_from && last.date_to) generateAlerts(last.date_from, last.date_to);
     }
+    bustMeta();
     res.json({ ok: true, log: (stdout || '').slice(0, 1200) });
   });
 });
@@ -616,6 +684,7 @@ app.post('/api/admin/purge', requireRole('admin'), (req, res) => {
     return { n, mdn };
   });
   const r = tx();
+  bustMeta();
   res.json({ ok: true, deleted_transactions: r.n, deleted_machine_day_entries: r.mdn });
 });
 
