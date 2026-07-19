@@ -277,8 +277,24 @@ async function init(){
       const box=$('alerts-box');
       if(!box.hidden){box.hidden=true;return;}
       box.hidden=false;
-      box.innerHTML=d.alerts.length?d.alerts.map(a=>`<div class="al"><b>⚠</b> ${a.message} <span style="color:var(--muted)">(${a.created_at})</span></div>`).join('')
-        :'<div class="al">No alerts yet — they appear when an upload pushes a division above its fiscal-year target.</div>';
+      let pushBtn='';
+      if('serviceWorker' in navigator && 'PushManager' in window && Notification.permission!=='granted')
+        pushBtn='<div class="al"><button id="push-en" style="border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">🔔 Enable notifications on this device</button></div>';
+      box.innerHTML=pushBtn+(d.alerts.length?d.alerts.map(a=>`<div class="al"><b>⚠</b> ${a.message} <span style="color:var(--muted)">(${a.created_at})</span></div>`).join('')
+        :'<div class="al">No alerts yet — they appear when an upload pushes a division above its fiscal-year target.</div>');
+      const pe=document.getElementById('push-en');
+      if(pe) pe.onclick=async()=>{
+        try{
+          const perm=await Notification.requestPermission();
+          if(perm!=='granted'){pe.textContent='Notifications blocked in browser settings';return;}
+          const reg=await navigator.serviceWorker.ready;
+          const {key}=await (await fetch('/api/push/key')).json();
+          const conv=k=>{const p='='.repeat((4-k.length%4)%4);const b=atob((k+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0));};
+          const sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:conv(key)});
+          const r=await fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});
+          pe.textContent=r.ok?'✓ Notifications enabled on this device':'Failed — try again';
+        }catch(err){pe.textContent='Could not enable: '+err.message;}
+      };
       await fetch('/api/alerts/seen',{method:'POST'});
       $('bell-n').hidden=true;
     };
