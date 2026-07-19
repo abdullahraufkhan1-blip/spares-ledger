@@ -79,9 +79,26 @@ function setupAuth(app, db) {
       res.json({ ok: true });
     } catch (e) { res.status(400).json({ error: 'Username already exists.' }); }
   });
+  app.post('/api/admin/users/:id/delete', requireRole('admin'), (req, res) => {
+    const id = +req.params.id;
+    if (id === req.user.user_id) return res.status(400).json({ error: "You can't delete your own account." });
+    const u = db.prepare('SELECT username, role FROM users WHERE user_id=?').get(id);
+    if (!u) return res.status(404).json({ error: 'User not found.' });
+    if (u.role === 'admin' && db.prepare("SELECT COUNT(*) n FROM users WHERE role='admin' AND active=1").get().n <= 1)
+      return res.status(400).json({ error: 'Cannot delete the last active admin.' });
+    db.prepare('DELETE FROM users WHERE user_id=?').run(id);
+    res.json({ ok: true });
+  });
+
   app.post('/api/admin/users/:id', requireRole('admin'), (req, res) => {
     const id = +req.params.id;
-    const { password, role, hd_code, active, display_name } = req.body || {};
+    const { password, role, hd_code, active, display_name, username } = req.body || {};
+    if (username !== undefined) {
+      const un = String(username).trim();
+      if (un.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters.' });
+      try { db.prepare('UPDATE users SET username=? WHERE user_id=?').run(un, id); }
+      catch (e) { return res.status(400).json({ error: 'That username is already taken.' }); }
+    }
     if (id === req.user.user_id && active === 0)
       return res.status(400).json({ error: "You can't deactivate your own account." });
     if (password) db.prepare('UPDATE users SET pw_hash=? WHERE user_id=?').run(bcrypt.hashSync(String(password), 10), id);
