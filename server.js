@@ -819,6 +819,7 @@ function generateAlerts(dateFrom, dateTo) {
     }
   } catch (e) { console.error('alert generation failed:', e.message); }
   emailAlerts(created);
+  sendPush(created);
 }
 
 // Deviation analysis: WHEN did the rate exceed target, and WHAT drove the excess
@@ -887,6 +888,64 @@ app.get('/api/deviation', requireAuth, (req, res) => {
   res.json({ hd, fy_label: fyLabel(fy), target, bucket, buckets, attribution });
 });
 
+
+
+// ---------- Web push notifications (installed app, phone/desktop) ----------
+const webpush = require('web-push');
+db.exec(`CREATE TABLE IF NOT EXISTS push_subs (
+  sub_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  sub_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+
+function getVapid() {
+  let pub = db.prepare("SELECT value FROM app_meta WHERE key='vapid_pub'").get();
+  let priv = db.prepare("SELECT value FROM app_meta WHERE key='vapid_priv'").get();
+  if (!pub || !priv) {
+    const keys = webpush.generateVAPIDKeys();
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES ('vapid_pub',?),('vapid_priv',?)")
+      .run(keys.publicKey, keys.privateKey);
+    pub = { value: keys.publicKey }; priv = { value: keys.privateKey };
+  }
+  return { publicKey: pub.value, privateKey: priv.value };
+}
+const VAPID = getVapid();
+webpush.setVapidDetails('mailto:alerts@spares-ledger.local', VAPID.publicKey, VAPID.privateKey);
+
+app.get('/api/push/key', requireAuth, (req, res) => res.json({ key: VAPID.publicKey }));
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const sub = req.body;
+  if (!sub || !sub.endpoint) return res.status(400).json({ error: 'Invalid subscription.' });
+  db.prepare(`INSERT INTO push_subs (user_id, endpoint, sub_json) VALUES (?,?,?)
+              ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, sub_json=excluded.sub_json`)
+    .run(req.user.user_id, sub.endpoint, JSON.stringify(sub));
+  res.json({ ok: true });
+});
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  if (req.body && req.body.endpoint) db.prepare('DELETE FROM push_subs WHERE endpoint=?').run(req.body.endpoint);
+  res.json({ ok: true });
+});
+
+function sendPush(newAlerts) {
+  if (!newAlerts.length) return;
+  const subs = db.prepare(`SELECT ps.sub_id, ps.sub_json, u.role, u.hd_code
+                           FROM push_subs ps JOIN users u ON u.user_id = ps.user_id WHERE u.active = 1`).all();
+  for (const s of subs) {
+    const mine = newAlerts.filter(a => s.role !== 'plant' || !s.hd_code || a.hd === s.hd_code);
+    if (!mine.length) continue;
+    const payload = JSON.stringify({
+      title: mine.length === 1 ? `⚠ ${mine[0].hd} above target (${mine[0].pct}%)`
+                               : `⚠ ${mine.length} divisions above target`,
+      body: mine.map(a => a.message.split(' See Target analysis')[0]).join('\n').slice(0, 400),
+    });
+    webpush.sendNotification(JSON.parse(s.sub_json), payload).catch(err => {
+      if (err.statusCode === 404 || err.statusCode === 410)
+        db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);   // dead device subscription
+      else console.error('push failed:', err.statusCode || err.message);
+    });
+  }
+}
 
 // ---------- Email alerts ----------
 // Configure in Railway Variables: SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASS,
