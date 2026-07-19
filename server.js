@@ -67,6 +67,9 @@ function migrate() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_cover_item
              ON transactions(tran_date, item_code, qty_iss, value)`);
   db.exec('ANALYZE');
+  db.exec(`CREATE TABLE IF NOT EXISTS alert_dismissals (
+    user_id INTEGER NOT NULL, alert_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, alert_id))`);
   db.exec(`CREATE TABLE IF NOT EXISTS downtime (
     dt_id INTEGER PRIMARY KEY AUTOINCREMENT,
     hd_code TEXT NOT NULL,
@@ -731,11 +734,27 @@ app.post('/api/admin/targets', requireRole('admin'), (req, res) => {
 
 // Alerts (scoped: plant users see their own HD only)
 app.get('/api/alerts', requireAuth, (req, res) => {
-  const scope = req.user.role === 'plant' && req.user.hd_code ? 'WHERE hd_code = ?' : '';
-  const args = scope ? [req.user.hd_code] : [];
-  const rows = db.prepare(`SELECT * FROM alerts ${scope} ORDER BY alert_id DESC LIMIT 20`).all(...args);
-  const unseen = db.prepare(`SELECT COUNT(*) AS n FROM alerts ${scope ? scope + ' AND' : 'WHERE'} seen=0`).all(...args)[0] || { n: 0 };
+  const plant = req.user.role === 'plant' && req.user.hd_code;
+  const cond = ['d.alert_id IS NULL']; const args = [req.user.user_id];
+  if (plant) { cond.push('a.hd_code = ?'); args.push(req.user.hd_code); }
+  const rows = db.prepare(`SELECT a.* FROM alerts a
+      LEFT JOIN alert_dismissals d ON d.alert_id = a.alert_id AND d.user_id = ?
+      WHERE ${cond.join(' AND ')} ORDER BY a.alert_id DESC LIMIT 20`).all(...args);
+  const unseen = db.prepare(`SELECT COUNT(*) AS n FROM alerts a
+      LEFT JOIN alert_dismissals d ON d.alert_id = a.alert_id AND d.user_id = ?
+      WHERE ${cond.join(' AND ')} AND a.seen = 0`).get(...args);
   res.json({ unseen: unseen.n, alerts: rows });
+});
+
+app.post('/api/alerts/clear', requireAuth, (req, res) => {
+  const plant = req.user.role === 'plant' && req.user.hd_code;
+  const ids = plant
+    ? db.prepare('SELECT alert_id FROM alerts WHERE hd_code=?').all(req.user.hd_code)
+    : db.prepare('SELECT alert_id FROM alerts').all();
+  const ins = db.prepare('INSERT OR IGNORE INTO alert_dismissals (user_id, alert_id) VALUES (?,?)');
+  const tx = db.transaction(() => ids.forEach(r => ins.run(req.user.user_id, r.alert_id)));
+  tx();
+  res.json({ ok: true, cleared: ids.length });
 });
 app.post('/api/alerts/seen', requireAuth, (req, res) => {
   const scope = req.user.role === 'plant' && req.user.hd_code ? 'WHERE hd_code = ?' : '';
@@ -922,6 +941,20 @@ app.post('/api/push/subscribe', requireAuth, (req, res) => {
     .run(req.user.user_id, sub.endpoint, JSON.stringify(sub));
   res.json({ ok: true });
 });
+app.post('/api/push/test', requireAuth, (req, res) => {
+  const subs = db.prepare('SELECT sub_id, sub_json FROM push_subs WHERE user_id=?').all(req.user.user_id);
+  if (!subs.length) return res.status(400).json({ error: 'No devices registered for your account yet — enable notifications first.' });
+  const payload = JSON.stringify({ title: '✓ Spares Ledger test', body: 'Notifications are working on this device.' });
+  let sent = 0;
+  for (const s of subs) {
+    webpush.sendNotification(JSON.parse(s.sub_json), payload).catch(err => {
+      if (err.statusCode === 404 || err.statusCode === 410) db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);
+    });
+    sent++;
+  }
+  res.json({ ok: true, devices: sent });
+});
+
 app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
   if (req.body && req.body.endpoint) db.prepare('DELETE FROM push_subs WHERE endpoint=?').run(req.body.endpoint);
   res.json({ ok: true });
