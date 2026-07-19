@@ -297,9 +297,12 @@ async function init(){
       };
       const pt=document.getElementById('push-test');
       if(pt) pt.onclick=async()=>{
+        pt.textContent='Testing…';
         const r=await fetch('/api/push/test',{method:'POST'});
         const j=await r.json();
-        pt.textContent=r.ok?`✓ Sent to ${j.devices} device(s) — check your notifications`:(j.error||'Failed');
+        if(!r.ok){pt.textContent=j.error||'Failed';return;}
+        if(j.failed===0) pt.textContent=`✓ Delivered to ${j.delivered} device(s) — check notifications now`;
+        else pt.textContent=`${j.delivered} delivered, ${j.failed} FAILED: `+j.results.filter(x=>!x.delivered).map(x=>`device ${x.device} (${x.status}: ${x.hint})`).join('; ');
       };
       const pe=document.getElementById('push-en');
       if(pe) pe.onclick=async()=>{
