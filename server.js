@@ -56,6 +56,14 @@ function migrate() {
   }
   db.exec('DROP VIEW IF EXISTS v_hd_machine_day_cost');
   db.exec('CREATE INDEX IF NOT EXISTS idx_md_range ON machine_days(hd_code, date_from, date_to)');
+  db.exec(`CREATE TABLE IF NOT EXISTS downtime (
+    dt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hd_code TEXT NOT NULL,
+    date_from TEXT NOT NULL,
+    date_to TEXT NOT NULL,
+    factor REAL NOT NULL CHECK (factor >= 0 AND factor <= 1),
+    note TEXT,
+    CHECK (date_from <= date_to))`);
 }
 migrate();
 
@@ -121,19 +129,38 @@ function whereClause(q) {
 }
 
 
-// Pro-rated machine days per HD over an arbitrary date range.
-// An entry covering N days contributes machine_days * overlap_days / N.
+// Pro-rated machine days per HD over an arbitrary date range, weighted by
+// shutdown/closure entries: closed days carry factor 0, partial days their
+// fraction, normal days 1. An entry's TOTAL machine days are redistributed
+// across its weighted days — closures shift capacity, never delete it.
+const dayNum = s => Date.UTC(+s.slice(0,4), +s.slice(5,7)-1, +s.slice(8,10)) / 86400000;
 function machineDaysBetween(from, to) {
   const f = from || '0000-01-01', t = to || '9999-12-31';
   const rows = db.prepare(`SELECT hd_code, date_from, date_to, machine_days
                            FROM machine_days WHERE date_from <= ? AND date_to >= ?`).all(t, f);
-  const day = s => Date.UTC(+s.slice(0,4), +s.slice(5,7)-1, +s.slice(8,10)) / 86400000;
   const out = {};
   for (const r of rows) {
-    const entDays = day(r.date_to) - day(r.date_from) + 1;
-    const ovDays  = Math.min(day(r.date_to), day(t)) - Math.max(day(r.date_from), day(f)) + 1;
-    if (ovDays <= 0) continue;
-    out[r.hd_code] = (out[r.hd_code] || 0) + r.machine_days * (ovDays / entDays);
+    const e1 = dayNum(r.date_from), e2 = dayNum(r.date_to);
+    const w1 = Math.max(e1, dayNum(f)), w2 = Math.min(e2, dayNum(t));
+    if (w2 < w1) continue;
+    const dts = db.prepare(`SELECT date_from, date_to, factor FROM downtime
+                            WHERE hd_code = ? AND date_from <= ? AND date_to >= ?`)
+                  .all(r.hd_code, r.date_to, r.date_from);
+    let contrib;
+    if (!dts.length) {
+      contrib = r.machine_days * ((w2 - w1 + 1) / (e2 - e1 + 1));
+    } else {
+      const spans = dts.map(d => ({ a: dayNum(d.date_from), b: dayNum(d.date_to), fct: d.factor }));
+      let sumAll = 0, sumWin = 0;
+      for (let d = e1; d <= e2; d++) {
+        let w = 1;
+        for (const sp of spans) if (d >= sp.a && d <= sp.b) w = Math.min(w, sp.fct);
+        sumAll += w;
+        if (d >= w1 && d <= w2) sumWin += w;
+      }
+      contrib = sumAll > 0 ? r.machine_days * (sumWin / sumAll) : 0;
+    }
+    out[r.hd_code] = (out[r.hd_code] || 0) + contrib;
   }
   for (const k of Object.keys(out)) out[k] = +out[k].toFixed(2);
   return out;
@@ -796,6 +823,28 @@ function emailAlerts(newAlerts) {
 }
 
 // Admin: manage recipients
+app.get('/api/admin/downtime', requireRole('admin'), (req, res) => {
+  res.json(db.prepare('SELECT * FROM downtime ORDER BY date_from DESC, hd_code').all());
+});
+app.post('/api/admin/downtime', requireRole('admin'), (req, res) => {
+  const { hd_code, date_from, date_to, factor, note } = req.body || {};
+  const DR = /^\d{4}-\d{2}-\d{2}$/;
+  const hds = new Set(db.prepare('SELECT DISTINCT hd_code FROM stores').all().map(r => r.hd_code));
+  if (!hds.has(hd_code)) return res.status(400).json({ error: 'Pick a division.' });
+  if (!DR.test(date_from || '') || !DR.test(date_to || '') || date_from > date_to)
+    return res.status(400).json({ error: 'Provide a valid date range (from ≤ to).' });
+  const fct = Number(factor);
+  if (!isFinite(fct) || fct < 0 || fct > 1)
+    return res.status(400).json({ error: 'Capacity must be between 0% and 100%.' });
+  db.prepare('INSERT INTO downtime (hd_code, date_from, date_to, factor, note) VALUES (?,?,?,?,?)')
+    .run(hd_code, date_from, date_to, fct, note || null);
+  res.json({ ok: true });
+});
+app.post('/api/admin/downtime/:id/delete', requireRole('admin'), (req, res) => {
+  db.prepare('DELETE FROM downtime WHERE dt_id=?').run(+req.params.id);
+  res.json({ ok: true });
+});
+
 app.get('/api/admin/recipients', requireRole('admin'), (req, res) => {
   res.json({ mail_configured: mailReady,
              recipients: db.prepare('SELECT * FROM alert_recipients ORDER BY email').all() });
