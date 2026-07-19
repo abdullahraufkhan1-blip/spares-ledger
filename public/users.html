@@ -71,6 +71,29 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
   </div>
 
   <div class="panel">
+    <h2>Shutdowns &amp; partial closures</h2>
+    <form class="new" id="dt-form" style="align-items:end">
+      <div class="field" style="max-width:110px"><label>Division</label><select id="dt-hd"></select></div>
+      <div class="field" style="max-width:140px"><label>From</label><input type="date" id="dt-from"></div>
+      <div class="field" style="max-width:140px"><label>To</label><input type="date" id="dt-to"></div>
+      <div class="field" style="max-width:170px"><label>Running capacity</label>
+        <select id="dt-fct">
+          <option value="0">Fully closed (0%)</option>
+          <option value="0.33">1 of 3 shifts (33%)</option>
+          <option value="0.5">Half day / 12 hrs (50%)</option>
+          <option value="0.67">2 of 3 shifts (67%)</option>
+          <option value="custom">Custom %…</option>
+        </select></div>
+      <div class="field" style="max-width:90px" id="dt-custom-f" hidden><label>%</label>
+        <input type="number" id="dt-custom" min="0" max="100" step="1"></div>
+      <div class="field" style="max-width:160px"><label>Note (e.g. Eid)</label><input id="dt-note"></div>
+      <button type="submit">Add closure</button>
+    </form>
+    <div class="msg" id="dt-msg">Closures redistribute a division's entered machine days: closed days count 0, partial days their fraction, running days proportionally more. Totals you entered stay unchanged.</div>
+    <table><thead><tr><th>Division</th><th>From</th><th>To</th><th>Capacity</th><th>Note</th><th></th></tr></thead><tbody id="dt-rows"></tbody></table>
+  </div>
+
+  <div class="panel">
     <h2>Email alert recipients</h2>
     <form class="new" id="rc-form" style="align-items:end">
       <div class="field" style="flex:2"><label>Email</label><input type="email" id="rc-email" placeholder="name@interloop-pk.com"></div>
@@ -172,6 +195,35 @@ $('new').onsubmit=e=>{e.preventDefault();
   e.target.reset(); $('hd-field').hidden=true;
 };
 load();
+
+// ---------- shutdowns / closures ----------
+(function(){
+  ['HD-1','HD-2','HD-3','HD-4','HD-5','HD-6'].forEach(h=>{
+    const o=document.createElement('option');o.value=o.textContent=h;$('dt-hd').appendChild(o);});
+  $('dt-fct').onchange=()=>{$('dt-custom-f').hidden=$('dt-fct').value!=='custom';};
+  async function loadDt(){
+    const r=await fetch('/api/admin/downtime'); if(!r.ok) return;
+    const rows=await r.json();
+    $('dt-rows').innerHTML=rows.length?rows.map(d=>`
+      <tr><td>${d.hd_code}</td><td class="mono">${d.date_from}</td><td class="mono">${d.date_to}</td>
+      <td>${Math.round(d.factor*100)}%${d.factor===0?' (closed)':''}</td><td>${d.note||'—'}</td>
+      <td style="text-align:right"><button onclick="delDt(${d.dt_id})">Delete</button></td></tr>`).join('')
+      :'<tr><td colspan="6" style="color:var(--muted)">No closures recorded.</td></tr>';
+  }
+  window.delDt=async id=>{await fetch('/api/admin/downtime/'+id+'/delete',{method:'POST'});loadDt();};
+  $('dt-form').onsubmit=async e=>{
+    e.preventDefault();
+    let f=$('dt-fct').value;
+    if(f==='custom') f=(+$('dt-custom').value||0)/100;
+    const r=await fetch('/api/admin/downtime',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({hd_code:$('dt-hd').value,date_from:$('dt-from').value,date_to:$('dt-to').value,
+                           factor:+f,note:$('dt-note').value})});
+    const j=await r.json(); const m=$('dt-msg');
+    m.className='msg '+(r.ok?'ok':'err'); m.textContent=r.ok?'Closure saved — all rates recalculated.':(j.error||'Failed.');
+    if(r.ok){$('dt-note').value='';loadDt();}
+  };
+  loadDt();
+})();
 
 // ---------- email recipients ----------
 (function(){
