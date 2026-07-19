@@ -271,6 +271,7 @@ async function init(){
   async function loadAlerts(){
     const r=await fetch('/api/alerts'); if(!r.ok) return;
     const d=await r.json();
+    window.__alerts=d;
     $('bell').hidden=false;
     $('bell-n').hidden=!d.unseen; $('bell-n').textContent=d.unseen;
     $('bell').onclick=async()=>{
@@ -278,10 +279,28 @@ async function init(){
       if(!box.hidden){box.hidden=true;return;}
       box.hidden=false;
       let pushBtn='';
-      if('serviceWorker' in navigator && 'PushManager' in window && Notification.permission!=='granted')
-        pushBtn='<div class="al"><button id="push-en" style="border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">🔔 Enable notifications on this device</button></div>';
-      box.innerHTML=pushBtn+(d.alerts.length?d.alerts.map(a=>`<div class="al"><b>⚠</b> ${a.message} <span style="color:var(--muted)">(${a.created_at})</span></div>`).join('')
-        :'<div class="al">No alerts yet — they appear when an upload pushes a division above its fiscal-year target.</div>');
+      if('serviceWorker' in navigator && 'PushManager' in window){
+        if(Notification.permission!=='granted')
+          pushBtn='<div class="al"><button id="push-en" style="border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">🔔 Enable notifications on this device</button></div>';
+        else
+          pushBtn='<div class="al"><button id="push-test" style="border:1px solid var(--line);background:#fff;color:var(--muted);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px">Send test notification</button></div>';
+      }
+      const clearBtn=d.alerts.length?'<div class="al" style="display:flex;justify-content:flex-end"><button id="al-clear" style="border:1px solid var(--line);background:#fff;color:var(--muted);border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Clear notifications</button></div>':'';
+      box.innerHTML=pushBtn+clearBtn+(d.alerts.length?d.alerts.map(a=>`<div class="al"><b>⚠</b> ${a.message} <span style="color:var(--muted)">(${a.created_at})</span></div>`).join('')
+        :'<div class="al">No alerts — they appear when a division goes above its fiscal-year target.</div>');
+      const ac=document.getElementById('al-clear');
+      if(ac) ac.onclick=async()=>{
+        await fetch('/api/alerts/clear',{method:'POST'});
+        box.innerHTML=pushBtn+'<div class="al">Cleared. New alerts will appear here.</div>';
+        $('bell-n').hidden=true;
+        loadAlerts();
+      };
+      const pt=document.getElementById('push-test');
+      if(pt) pt.onclick=async()=>{
+        const r=await fetch('/api/push/test',{method:'POST'});
+        const j=await r.json();
+        pt.textContent=r.ok?`✓ Sent to ${j.devices} device(s) — check your notifications`:(j.error||'Failed');
+      };
       const pe=document.getElementById('push-en');
       if(pe) pe.onclick=async()=>{
         try{
