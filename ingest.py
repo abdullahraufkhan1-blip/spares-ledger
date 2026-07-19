@@ -21,7 +21,10 @@ KEEP = ['Interface Date','Warehouse','Item Code','Item Description','Primary UOM
         'SP Nature','SP Category','Actual Cost','Qty Iss','Qty Value','Maint Type',
         'Asset Loc','Shift','Make Model','Short Desc']
 
-ASSET_LOC_RE = re.compile(r'^(?P<site>[^.]+)\.(?P<dept>[^.]+)\.(?P<wh>[^-]+)-(?P<cc>[^-]+)-(?P<mno>.+)$')
+# ERP exports vary: '1112.4001.0390-141202-00507' in some months,
+# '1112.4001.0390.141202.00507' (all dots) in others. Accept '.' or '-' as the
+# separator for the last three segments.
+ASSET_LOC_RE = re.compile(r'^(?P<site>[^.\-]+)\.(?P<dept>[^.\-]+)\.(?P<wh>[^.\-]+)[.\-](?P<cc>[^.\-]+)[.\-](?P<mno>.+)$')
 
 def norm_model(raw: str) -> str:
     return re.sub(r'[^A-Z0-9]', '', str(raw).upper())
@@ -195,4 +198,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
