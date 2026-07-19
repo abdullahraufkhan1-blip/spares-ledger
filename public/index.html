@@ -72,6 +72,23 @@ header .who a,header .who button{color:#C9D2E6;background:none;border:none;curso
 #cmp-holder td.rowkey{max-width:260px}
 #cmp-holder td.rowkey .code{font-family:var(--mono);font-size:12px;display:block}
 #cmp-holder td.rowkey .desc{font-size:11px;color:var(--muted);display:block;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hd-chips{display:flex;gap:4px;flex-wrap:wrap}
+.hd-chips button{border:1px solid var(--line);background:#fff;border-radius:99px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--muted)}
+.hd-chips button.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+#cmp-focus{border-bottom:1px solid var(--line);padding:12px 14px}
+#cmp-focus .fx-title{font-family:var(--display);font-weight:700;font-size:13.5px;margin-bottom:2px}
+#cmp-focus .fx-sub{font-size:11.5px;color:var(--muted);margin-bottom:10px}
+.fx-chart{display:flex;align-items:flex-end;gap:14px;height:150px;padding:0 6px}
+.fx-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.fx-val{font-family:var(--mono);font-size:11px;font-weight:600;margin-bottom:3px}
+.fx-bar{width:70%;max-width:64px;border-radius:4px 4px 0 0;background:var(--indigo)}
+.fx-lbl{font-family:var(--display);font-size:10.5px;letter-spacing:.6px;color:var(--muted);margin-top:5px}
+.fx-groups{display:flex;gap:18px;flex-wrap:wrap;padding:4px 6px}
+.fx-group{display:flex;flex-direction:column;align-items:center}
+.fx-group .fx-chart{gap:5px;padding:0}
+.fx-glabel{font-family:var(--mono);font-size:10.5px;margin-top:5px;color:var(--ink)}
+#cmp-holder tr.focused td{background:var(--indigo-soft)}
+#cmp-focus .fx-close{float:right;border:none;background:none;color:var(--muted);cursor:pointer;font-size:15px}
 #cmp-dim,#cmp-mode{border:1px solid var(--line);border-radius:6px;padding:6px 8px;background:#fff}
 
 /* group tabs */
@@ -84,8 +101,8 @@ header .who a,header .who button{color:#C9D2E6;background:none;border:none;curso
 .panel-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .panel-head h2{font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:.3px}
 .panel-head .tot{font-family:var(--mono);font-size:13px}.panel-head .tot b{color:var(--bleed)}
-#pdf-btn{border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;font-size:12.5px}
-#pdf-btn:hover{background:var(--indigo-soft)}
+.pdfbtn,#pdf-btn{border:1px solid var(--indigo);background:#fff;color:var(--indigo);border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;font-size:12.5px}
+.pdfbtn:hover,#pdf-btn:hover{background:var(--indigo-soft)}
 table{width:100%;border-collapse:collapse}
 th{font-family:var(--display);font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
 th.num,td.num{text-align:right}
@@ -159,6 +176,7 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
       <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <select id="tga-hd"></select>
         <select id="tga-bucket"><option value="month">Monthly</option><option value="week">Weekly</option><option value="day">Daily</option></select>
+        <button id="tga-pdf" class="pdfbtn">Download PDF</button>
       </span>
     </div>
     <div id="tga-holder"></div>
@@ -168,12 +186,15 @@ td .share{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:
     <div class="panel-head">
       <h2>Plant comparison</h2>
       <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span id="cmp-hds" class="hd-chips"></span>
         <select id="cmp-dim"><option value="category">By category</option><option value="item">By item</option></select>
         <select id="cmp-mode"><option value="cost">Total PKR</option><option value="rate">PKR / machine day</option></select>
+        <button id="cmp-pdf" class="pdfbtn">Download PDF</button>
       </span>
     </div>
+    <div id="cmp-focus" hidden></div>
     <div id="cmp-holder" style="overflow-x:auto"></div>
-    <div class="foot">Shading is relative within each row — the darkest cell is that row's heaviest plant.</div>
+    <div class="foot">Tap a division chip to include/exclude it (minimum two). Tap rows to chart them — tap several (up to 6) for a grouped comparison; tap again to remove. The PDF includes your selection.</div>
   </div>
 
   <div class="panel" id="rank-panel">
@@ -268,6 +289,18 @@ async function init(){
   (META.hds||[]).forEach(h=>{const o=document.createElement('option');o.value=o.textContent=h;tgaHd.appendChild(o);});
   if(ME.role==='plant'&&ME.hd_code){tgaHd.value=ME.hd_code;tgaHd.disabled=true;}
   tgaHd.onchange=render; $('tga-bucket').onchange=render;
+  // division chips for plant comparison (any subset, min 2)
+  state.cmpHds=new Set(META.hds); state.cmpFocus=new Set();
+  const chipBox=$('cmp-hds');
+  META.hds.forEach(h=>{
+    const b=document.createElement('button'); b.textContent=h; b.classList.add('on');
+    b.onclick=()=>{
+      if(state.cmpHds.has(h)){ if(state.cmpHds.size<=2) return; state.cmpHds.delete(h); b.classList.remove('on'); }
+      else { state.cmpHds.add(h); b.classList.add('on'); }
+      render();
+    };
+    chipBox.appendChild(b);
+  });
   document.querySelectorAll('.viewbar button').forEach(b=>b.onclick=()=>{
     state.view=b.dataset.v;
     document.querySelectorAll('.viewbar button').forEach(x=>x.classList.toggle('on',x===b));
@@ -275,6 +308,11 @@ async function init(){
   });
   $('cmp-dim').onchange=render; $('cmp-mode').onchange=render;
   $('pdf-btn').onclick=()=>{window.open('/api/report.pdf?'+qs(),'_blank');};
+  $('cmp-pdf').onclick=()=>{const p=new URLSearchParams(qs());p.set('dim',$('cmp-dim').value);p.delete('group_by');
+    if(state.cmpHds.size<META.hds.length) p.set('hd',[...state.cmpHds].join('||'));
+    if(state.cmpFocus.size) p.set('focus',[...state.cmpFocus].join('||'));
+    window.open('/api/report-compare.pdf?'+p.toString(),'_blank');};
+  $('tga-pdf').onclick=()=>{const p=new URLSearchParams({from:state.from,to:state.to,hd:$('tga-hd').value,bucket:$('tga-bucket').value});window.open('/api/report-targets.pdf?'+p.toString(),'_blank');};
   render();
 }
 function fill(id,vals){const s=$(id);vals.forEach(v=>{const o=document.createElement('option');o.value=o.textContent=v;s.appendChild(o);});}
@@ -317,6 +355,7 @@ async function render(){
     const kpi=await (await fetch('/api/kpi?'+qs())).json();
     drawKpis(kpi);
     const p=new URLSearchParams(qs()); p.set('dim',$('cmp-dim').value); p.delete('group_by');
+    if(state.cmpHds.size<META.hds.length) p.set('hd',[...state.cmpHds].join('||'));
     const cmp=await (await fetch('/api/compare?'+p.toString())).json();
     drawCompare(cmp);
     return;
@@ -383,6 +422,72 @@ function drawCompare(cmp){
     return `<tr><td class="rowkey">${key}</td>${cells}${mode==='rate'?'<td class="tot">—</td>':tot}</tr>`;
   }).join('');
   $('cmp-holder').innerHTML=`<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  // click a row to focus it as side-by-side bars
+  const trs=$('cmp-holder').querySelectorAll('tbody tr');
+  cmp.rows.forEach((r,i)=>{
+    trs[i].style.cursor='pointer';
+    if(state.cmpFocus.has(r.key)) trs[i].classList.add('focused');
+    trs[i].onclick=()=>{
+      if(state.cmpFocus.has(r.key)) state.cmpFocus.delete(r.key);
+      else { if(state.cmpFocus.size>=6){alert('Up to 6 at a time — remove one first.');return;} state.cmpFocus.add(r.key); }
+      trs[i].classList.toggle('focused');
+      drawFocusSet(cmp);
+    };
+  });
+  drawFocusSet(cmp);
+}
+
+function drawFocusSet(cmp){
+  const keys=[...state.cmpFocus];
+  const sel=keys.map(k=>cmp.rows.find(r=>r.key===k)).filter(Boolean);
+  if(!sel.length){$('cmp-focus').hidden=true;return;}
+  if(sel.length===1){drawFocus(cmp,sel[0]);return;}
+  const mode=$('cmp-mode').value;
+  const val=(r,h)=>{const c=r.per_hd[h]||0;return mode==='rate'?(cmp.mdays[h]?c/cmp.mdays[h]:null):c;};
+  const mx=Math.max(...sel.flatMap(r=>cmp.hds.map(h=>val(r,h)||0)),1e-9);
+  const box=$('cmp-focus'); box.hidden=false;
+  const legend=cmp.hds.map((h,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:11.5px">
+    <span style="width:9px;height:9px;border-radius:2px;background:${CMP_COLORS[i%CMP_COLORS.length]}"></span>${h}</span>`).join('');
+  box.innerHTML=`<button class="fx-close" title="Clear" onclick="state.cmpFocus.clear();this.parentElement.hidden=true;document.querySelectorAll('#cmp-holder tr.focused').forEach(t=>t.classList.remove('focused'));">×</button>
+    <div class="fx-title">Comparing ${sel.length} ${$('cmp-dim').value==='item'?'items':'categories'}</div>
+    <div class="fx-sub">${mode==='rate'?'PKR per machine day':'total PKR'} by division · ${legend}</div>
+    <div class="fx-groups">${sel.map(r=>`
+      <div class="fx-group">
+        <div class="fx-chart" style="height:120px">${cmp.hds.map((h,i)=>{
+          const v=val(r,h);
+          const hpx=v==null?0:Math.max(3,Math.round(96*v/mx));
+          const shown=v==null?'—':(mode==='rate'?v.toFixed(1):fmtShort(v));
+          return `<div class="fx-col"><div class="fx-val" style="font-size:9.5px">${shown}</div>
+            <div class="fx-bar" style="height:${hpx}px;max-width:26px;background:${CMP_COLORS[i%CMP_COLORS.length]}"></div></div>`;
+        }).join('')}</div>
+        <div class="fx-glabel" title="${r.desc||r.key}">${String(r.key).length>22?String(r.key).slice(0,20)+'…':r.key}</div>
+      </div>`).join('')}</div>`;
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+const CMP_COLORS=['#23386B','#C22F2F','#4A6FA5','#E0A458','#5B8C5A','#8B5E83'];
+const fmtShort=n=>{const a=Math.abs(n);if(a>=1e6)return (n/1e6).toFixed(1)+'M';if(a>=1e3)return (n/1e3).toFixed(0)+'k';return String(Math.round(n));};
+
+function drawFocus(cmp,r){
+  const mode=$('cmp-mode').value;
+  const vals=cmp.hds.map(h=>{
+    const c=r.per_hd[h]||0;
+    return mode==='rate' ? (cmp.mdays[h]? c/cmp.mdays[h] : null) : c;
+  });
+  const mx=Math.max(...vals.map(v=>v||0),1e-9);
+  const box=$('cmp-focus'); box.hidden=false;
+  const title=r.desc!==undefined?`${r.key}`:r.key;
+  const sub=(r.desc?r.desc+' · ':'')+(mode==='rate'?'PKR per machine day':'total PKR')+' by division';
+  box.innerHTML=`<button class="fx-close" title="Close" onclick="this.parentElement.hidden=true;state.cmpFocus=null;">×</button>
+    <div class="fx-title">${title}</div><div class="fx-sub">${sub}</div>
+    <div class="fx-chart">${cmp.hds.map((h,i)=>{
+      const v=vals[i];
+      const hpx=v==null?0:Math.max(4,Math.round(120*v/mx));
+      const shown=v==null?'—':(mode==='rate'?v.toFixed(2):fmt(v));
+      return `<div class="fx-col"><div class="fx-val">${shown}</div>
+        <div class="fx-bar" style="height:${hpx}px;background:${v!=null&&v===mx?'var(--bleed)':'var(--indigo)'}"></div>
+        <div class="fx-lbl">${h}</div></div>`;
+    }).join('')}</div>`;
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 function syncSelects(){
   const map={hd:'f-hd',maint_type:'f-maint',shift:'f-shift',nature:'f-nature',category:'f-category',model:'f-model'};
