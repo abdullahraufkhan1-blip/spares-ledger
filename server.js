@@ -203,6 +203,123 @@ app.get('/api/kpi', requireAuth, (req, res) => {
   });
 });
 
+
+// ---------- PDF chart helpers (vector graphics via pdfkit) ----------
+const PALETTE = ['#23386B', '#C22F2F', '#4A6FA5', '#E0A458', '#5B8C5A', '#8B5E83', '#69707C', '#A3B4CC', '#B8860B', '#2F6F6F'];
+const kfmt = n => {
+  const a = Math.abs(n);
+  if (a >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(0) + 'k';
+  return String(Math.round(n));
+};
+
+// Vertical bar chart. data: [{label, value}], opts: {color, targetLine, valueFmt}
+function pdfBarChart(doc, x, y, w, h, data, opts = {}) {
+  const vf = opts.valueFmt || kfmt;
+  const max = Math.max(...data.map(d => d.value), opts.targetLine || 0, 1e-9) * 1.12;
+  const axisY = y + h;
+  // gridlines
+  doc.save().lineWidth(0.5);
+  for (let i = 1; i <= 4; i++) {
+    const gy = axisY - (h * i / 4);
+    doc.moveTo(x, gy).lineTo(x + w, gy).strokeColor('#EDF0F4').stroke();
+    doc.font('Helvetica').fontSize(6).fillColor('#9AA1AC').text(vf(max * i / 4), x - 34, gy - 2, { width: 30, align: 'right' });
+  }
+  const n = data.length, slot = w / n, bw = Math.min(slot * 0.62, 46);
+  data.forEach((d, i) => {
+    const bh = (d.value / max) * h;
+    const bx = x + i * slot + (slot - bw) / 2;
+    doc.rect(bx, axisY - bh, bw, bh).fill(opts.color ? (typeof opts.color === 'function' ? opts.color(d, i) : opts.color) : PALETTE[0]);
+    doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#14181F')
+       .text(vf(d.value), bx - 6, axisY - bh - 9, { width: bw + 12, align: 'center' });
+    doc.font('Helvetica').fontSize(6).fillColor('#69707C')
+       .text(String(d.label).slice(0, 12), bx - 8, axisY + 3, { width: bw + 16, align: 'center' });
+  });
+  if (opts.targetLine) {
+    const ty = axisY - (opts.targetLine / max) * h;
+    doc.save().moveTo(x, ty).lineTo(x + w, ty).dash(3, { space: 2 }).lineWidth(1).strokeColor('#C22F2F').stroke().undash().restore();
+    doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#C22F2F')
+       .text('target ' + vf(opts.targetLine), x + w - 70, ty - 9, { width: 70, align: 'right' });
+  }
+  doc.moveTo(x, axisY).lineTo(x + w, axisY).lineWidth(1).strokeColor('#C9CED6').stroke().restore();
+}
+
+// Donut chart with legend. data: [{label, value}]
+function pdfDonut(doc, cx, cy, r, data, opts = {}) {
+  const total = data.reduce((a, d) => a + Math.max(d.value, 0), 0) || 1;
+  let ang = -Math.PI / 2;
+  data.forEach((d, i) => {
+    const frac = Math.max(d.value, 0) / total;
+    if (frac <= 0) return;
+    const a2 = ang + frac * Math.PI * 2;
+    const large = (a2 - ang) > Math.PI ? 1 : 0;
+    const x1 = cx + r * Math.cos(ang), y1 = cy + r * Math.sin(ang);
+    const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
+    doc.path(`M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`).fill(PALETTE[i % PALETTE.length]);
+    ang = a2;
+  });
+  doc.circle(cx, cy, r * 0.55).fill('#FFFFFF');
+  doc.font('Helvetica-Bold').fontSize(8).fillColor('#14181F')
+     .text(kfmt(total), cx - r, cy - 8, { width: r * 2, align: 'center' });
+  doc.font('Helvetica').fontSize(6).fillColor('#69707C')
+     .text(opts.centerLabel || 'total', cx - r, cy + 2, { width: r * 2, align: 'center' });
+  // legend to the right
+  let ly = cy - r;
+  const lx = cx + r + 14;
+  data.forEach((d, i) => {
+    const pct = (100 * Math.max(d.value, 0) / total).toFixed(1);
+    doc.rect(lx, ly, 7, 7).fill(PALETTE[i % PALETTE.length]);
+    doc.font('Helvetica').fontSize(6.8).fillColor('#14181F')
+       .text(`${String(d.label).slice(0, 26)}  ·  ${pct}%`, lx + 11, ly + 0.5, { width: 170 });
+    ly += 11.5;
+  });
+}
+
+
+// Grouped bars: groups = [{label, values:[{label, value}]}] — bars per series inside each group
+function pdfGroupedBars(doc, x, y, w, h, groups, seriesLabels, opts = {}) {
+  const vf = opts.valueFmt || kfmt;
+  const max = Math.max(...groups.flatMap(g => g.values.map(v => v.value)), 1e-9) * 1.15;
+  const axisY = y + h;
+  doc.save().lineWidth(0.5);
+  for (let i = 1; i <= 4; i++) {
+    const gy = axisY - (h * i / 4);
+    doc.moveTo(x, gy).lineTo(x + w, gy).strokeColor('#EDF0F4').stroke();
+    doc.font('Helvetica').fontSize(6).fillColor('#9AA1AC').text(vf(max * i / 4), x - 34, gy - 2, { width: 30, align: 'right' });
+  }
+  const slot = w / groups.length;
+  groups.forEach((g, gi) => {
+    const n = g.values.length, bw = Math.min((slot * 0.8) / n, 22);
+    const start = x + gi * slot + (slot - bw * n) / 2;
+    g.values.forEach((v, i) => {
+      const bh = (v.value / max) * h;
+      doc.rect(start + i * bw, axisY - bh, bw - 1.5, bh).fill(PALETTE[i % PALETTE.length]);
+      if (bh > 12 && n <= 4)
+        doc.font('Helvetica').fontSize(5.4).fillColor('#14181F')
+           .text(vf(v.value), start + i * bw - 5, axisY - bh - 8, { width: bw + 10, align: 'center' });
+    });
+    doc.font('Helvetica').fontSize(6).fillColor('#69707C')
+       .text(String(g.label).slice(0, 16), x + gi * slot, axisY + 3, { width: slot, align: 'center' });
+  });
+  doc.moveTo(x, axisY).lineTo(x + w, axisY).lineWidth(1).strokeColor('#C9CED6').stroke().restore();
+  // legend
+  let lx = x;
+  seriesLabels.forEach((sl, i) => {
+    doc.rect(lx, y - 12, 7, 7).fill(PALETTE[i % PALETTE.length]);
+    doc.font('Helvetica').fontSize(6.5).fillColor('#14181F').text(sl, lx + 10, y - 11.5);
+    lx += 10 + doc.widthOfString(sl) + 16;
+  });
+}
+
+function pdfHeader(doc, title, sub) {
+  doc.rect(0, 0, doc.page.width, 64).fill('#23386B');
+  doc.fill('#FFFFFF').font('Helvetica-Bold').fontSize(15).text('SPARES LEDGER', 40, 16);
+  doc.font('Helvetica').fontSize(8.5).fillColor('#C9D2E6').text(sub || 'Interloop · Knitting', 40, 36);
+  doc.fontSize(8.5).text(`Generated ${new Date().toISOString().slice(0, 10)}`, 40, 16, { width: doc.page.width - 80, align: 'right' });
+  doc.fillColor('#14181F').font('Helvetica-Bold').fontSize(13).text(title, 40, 80);
+  return 100;
+}
+
 // ---------- PDF report of the current view ----------
 const PDFDocument = require('pdfkit');
 
@@ -334,7 +451,8 @@ app.get('/api/compare', requireAuth, (req, res) => {
     FROM v_consumption ${where}
     GROUP BY ${col}, hd_code`).all(...params);
 
-  const hds = db.prepare('SELECT DISTINCT hd_code FROM stores ORDER BY hd_code').all().map(r => r.hd_code);
+  let hds = db.prepare('SELECT DISTINCT hd_code FROM stores ORDER BY hd_code').all().map(r => r.hd_code);
+  if (q.hd) { const sel = new Set(String(q.hd).split('||')); hds = hds.filter(h => sel.has(h)); }
   const mdays = machineDaysBetween(q.from, q.to);
 
   const byKey = new Map();
@@ -695,6 +813,220 @@ app.post('/api/admin/recipients', requireRole('admin'), (req, res) => {
 app.post('/api/admin/recipients/:id/delete', requireRole('admin'), (req, res) => {
   db.prepare('DELETE FROM alert_recipients WHERE rid=?').run(+req.params.id);
   res.json({ ok: true });
+});
+
+
+// ---------- Plant comparison PDF (charts + matrix) ----------
+app.get('/api/report-compare.pdf', requireAuth, (req, res) => {
+  if (req.user.role === 'plant') return res.status(403).json({ error: 'Not available for plant users.' });
+  const dim = req.query.dim === 'item' ? 'item' : 'category';
+  const col = dim === 'item' ? 'item_code' : 'sp_category';
+  const q = { ...req.query };
+  const { where, params } = whereClause(q);
+  const raw = db.prepare(`SELECT ${col} AS key, ${dim === 'item' ? 'MIN(item_description) AS desc,' : ''}
+      hd_code, ROUND(SUM(value),2) AS cost FROM v_consumption ${where} GROUP BY ${col}, hd_code`).all(...params);
+  const hdTotals = db.prepare(`SELECT hd_code, ROUND(SUM(value),2) AS cost FROM v_consumption ${where}
+      GROUP BY hd_code ORDER BY hd_code`).all(...params);
+  const mdays = machineDaysBetween(q.from, q.to);
+  const hds = hdTotals.map(r => r.hd_code);
+  const focusKeys = q.focus ? String(q.focus).split('||').slice(0, 6) : [];
+  const byKey = new Map();
+  for (const r of raw) {
+    if (!byKey.has(r.key)) byKey.set(r.key, { key: r.key, desc: r.desc, per_hd: {}, total: 0 });
+    const o = byKey.get(r.key); o.per_hd[r.hd_code] = r.cost; o.total += r.cost;
+  }
+  const rows = [...byKey.values()].sort((a, b) => b.total - a.total).slice(0, 18);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="plant-comparison-${q.from || ''}-${q.to || ''}.pdf"`);
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 46, bottom: 46, left: 40, right: 40 } });
+  doc.pipe(res);
+  const W = doc.page.width - 80, X = 40;
+  let y = pdfHeader(doc, `Plant comparison — by ${dim}`, 'Interloop · Knitting · spare-parts consumption');
+  doc.font('Helvetica').fontSize(9).fillColor('#69707C')
+     .text(`Period: ${q.from || 'start'} to ${q.to || 'end'}`, X, y); y += 18;
+
+  // chart row: bleed by HD bars + share donut
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text('Total bleed by division (PKR)', X, y);
+  doc.text('Share of company bleed', X + W * 0.56, y); y += 14;
+  pdfBarChart(doc, X + 34, y, W * 0.46 - 34, 110, hdTotals.map(r => ({ label: r.hd_code, value: r.cost })),
+              { color: (d, i) => PALETTE[i % PALETTE.length] });
+  pdfDonut(doc, X + W * 0.56 + 55, y + 55, 52, hdTotals.map(r => ({ label: r.hd_code, value: r.cost })), { centerLabel: 'PKR' });
+  y += 145;
+
+  // per-machine-day bars if machine days exist
+  const rates = hdTotals.filter(r => mdays[r.hd_code]).map(r => ({ label: r.hd_code, value: +(r.cost / mdays[r.hd_code]).toFixed(2) }));
+  if (rates.length) {
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text('Cost per machine day (PKR) — the fair comparison', X, y); y += 14;
+    pdfBarChart(doc, X + 34, y, W - 34, 95, rates, { color: '#C22F2F', valueFmt: v => v.toFixed(1) });
+    y += 130;
+  }
+
+  // focus charts: one or several chosen categories/items across the selected divisions
+  const frs = focusKeys.map(k => byKey.get(k)).filter(Boolean);
+  if (frs.length === 1) {
+    const fr = frs[0], focus = fr.key;
+    if (y > doc.page.height - 240) { doc.addPage(); y = 50; }
+    const fLabel = dim === 'item' ? `${focus}${fr.desc ? ' — ' + String(fr.desc).slice(0, 60) : ''}` : focus;
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F')
+       .text(`Focus: ${fLabel} — cost by division (PKR)`, X, y); y += 14;
+    pdfBarChart(doc, X + 34, y, W - 34, 100,
+      hds.map(h => ({ label: h, value: fr.per_hd[h] || 0 })), { color: (d, i) => PALETTE[i % PALETTE.length] });
+    y += 128;
+    const fRates = hds.filter(h => mdays[h]).map(h => ({ label: h, value: +(((fr.per_hd[h] || 0)) / mdays[h]).toFixed(2) }));
+    if (fRates.length) {
+      doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F')
+         .text(`Focus: ${dim === 'item' ? focus : fLabel} — PKR per machine day`, X, y); y += 14;
+      pdfBarChart(doc, X + 34, y, W - 34, 85, fRates, { color: '#C22F2F', valueFmt: v => v.toFixed(2) });
+      y += 115;
+    }
+  } else if (frs.length > 1) {
+    if (y > doc.page.height - 260) { doc.addPage(); y = 50; }
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F')
+       .text(`Focus comparison — cost by division (PKR)`, X, y); y += 20;
+    pdfGroupedBars(doc, X + 34, y, W - 34, 105,
+      frs.map(fr => ({ label: fr.key, values: hds.map(h => ({ label: h, value: fr.per_hd[h] || 0 })) })), hds);
+    y += 132;
+    if (hds.every(h => mdays[h])) {
+      doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F')
+         .text(`Focus comparison — PKR per machine day`, X, y); y += 20;
+      pdfGroupedBars(doc, X + 34, y, W - 34, 90,
+        frs.map(fr => ({ label: fr.key, values: hds.map(h => ({ label: h, value: +(((fr.per_hd[h] || 0)) / mdays[h]).toFixed(2) })) })),
+        hds, { valueFmt: v => v.toFixed(1) });
+      y += 118;
+    }
+    if (dim === 'item') {
+      doc.font('Helvetica').fontSize(6.5).fillColor('#69707C');
+      frs.forEach(fr => { doc.text(`${fr.key} — ${String(fr.desc || '').slice(0, 90)}`, X, y); y += 8.5; });
+      y += 4;
+    }
+  }
+  // matrix table
+  if (y > doc.page.height - 200) { doc.addPage(); y = 50; }
+  doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text(`Top ${rows.length} ${dim === 'item' ? 'items' : 'categories'} across divisions (PKR)`, X, y); y += 12;
+  const keyW = dim === 'item' ? 150 : 120;
+  const cw = (W - keyW - 55) / hds.length;
+  doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#69707C');
+  doc.text(dim.toUpperCase(), X, y, { width: keyW });
+  hds.forEach((h, i) => doc.text(h, X + keyW + i * cw, y, { width: cw, align: 'right' }));
+  doc.text('TOTAL', X + keyW + hds.length * cw, y, { width: 55, align: 'right' });
+  y += 9; doc.moveTo(X, y).lineTo(X + W, y).strokeColor('#DDE1E7').lineWidth(0.5).stroke(); y += 3;
+  const BOTTOM = doc.page.height - 56;
+  for (const r of rows) {
+    if (y > BOTTOM - 12) { doc.addPage(); y = 50; }
+    const mx = Math.max(...hds.map(h => r.per_hd[h] || 0), 1e-9);
+    doc.font('Helvetica').fontSize(6.8).fillColor('#14181F').text(String(r.key).slice(0, dim === 'item' ? 38 : 26), X, y, { width: keyW, lineBreak: false });
+    hds.forEach((h, i) => {
+      const v = r.per_hd[h];
+      if (v) {
+        const a = 0.08 + 0.30 * (v / mx);
+        doc.save().fillOpacity(a).rect(X + keyW + i * cw + 2, y - 1.5, cw - 4, 10).fill('#C22F2F').restore();
+      }
+      doc.font('Helvetica').fontSize(6.8).fillColor(v ? '#14181F' : '#B6BCC6')
+         .text(v ? kfmt(v) : '—', X + keyW + i * cw, y, { width: cw, align: 'right' });
+    });
+    doc.font('Helvetica-Bold').text(kfmt(r.total), X + keyW + hds.length * cw, y, { width: 55, align: 'right' });
+    y += 12;
+  }
+  doc.font('Helvetica').fontSize(6.5).fillColor('#69707C')
+     .text('Cell shading is relative within each row — the darkest cell is that row\'s heaviest division.', X, Math.min(y + 6, BOTTOM));
+  doc.end();
+});
+
+// ---------- Target analysis PDF (rate-vs-target chart + attribution) ----------
+app.get('/api/report-targets.pdf', requireAuth, (req, res) => {
+  const q = scopeToUser(req);
+  const hd = q.hd, bucket = ['day', 'week', 'month'].includes(q.bucket) ? q.bucket : 'month';
+  if (!hd || !q.from || !q.to) return res.status(400).json({ error: 'hd, from and to required.' });
+  const { fy, targets } = targetsForRange(q.from, q.to);
+  const target = fy !== null ? targets[hd] : undefined;
+  if (target === undefined) return res.status(400).json({ error: 'No target for this division/FY (or range spans two FYs).' });
+  const bucketExpr = bucket === 'day' ? 'tran_date' : bucket === 'week' ? "strftime('%Y-W%W', tran_date)" : "substr(tran_date,1,7)";
+  const rows = db.prepare(`SELECT ${bucketExpr} AS b, MIN(tran_date) AS d1, MAX(tran_date) AS d2, SUM(t.value) AS cost
+      FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+      WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY ${bucketExpr} ORDER BY b`).all(hd, q.from, q.to);
+  const buckets = rows.map(r => {
+    const md = machineDaysBetween(r.d1, r.d2)[hd] || null;
+    return { b: r.b, d1: r.d1, d2: r.d2, cost: r.cost, md, rate: md ? +(r.cost / md).toFixed(2) : null };
+  });
+  const above = buckets.filter(b => b.rate !== null && b.rate > target);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="target-analysis-${hd}-${q.from}-${q.to}.pdf"`);
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 46, bottom: 46, left: 40, right: 40 } });
+  doc.pipe(res);
+  const W = doc.page.width - 80, X = 40;
+  let y = pdfHeader(doc, `Target analysis — ${hd}`, 'Interloop · Knitting · cost per machine day vs target');
+  doc.font('Helvetica').fontSize(9).fillColor('#69707C')
+     .text(`Period: ${q.from} to ${q.to}   ·   ${fyLabel(fy)} target: ${target} PKR/machine day   ·   ${bucket}ly view`, X, y); y += 18;
+
+  const chartData = buckets.filter(b => b.rate !== null).map(b => ({ label: b.b.replace('2025-','').replace('2026-',''), value: b.rate }));
+  if (chartData.length) {
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text('Rate vs target (PKR / machine day)', X, y); y += 14;
+    pdfBarChart(doc, X + 34, y, W - 34, 120, chartData,
+      { color: d => d.value > target ? '#C22F2F' : '#5B8C5A', targetLine: target, valueFmt: v => v.toFixed(1) });
+    y += 155;
+  }
+
+  if (above.length) {
+    const ranges = above.map(b => [b.d1, b.d2]);
+    const inRange = ranges.map(() => '(t.tran_date BETWEEN ? AND ?)').join(' OR ');
+    const rp = ranges.flat();
+    const mdW = above.reduce((a, b) => a + (b.md || 0), 0);
+    const actualW = above.reduce((a, b) => a + b.cost, 0);
+    const expectedW = target * mdW;
+    const base = db.prepare(`SELECT i.sp_category k, SUM(t.value) v FROM transactions t
+        JOIN stores s ON s.warehouse_code=t.warehouse_code JOIN items i ON i.item_code=t.item_code
+        WHERE s.hd_code=? AND t.tran_date BETWEEN ? AND ? GROUP BY 1`).all(hd, q.from, q.to);
+    const bt = base.reduce((a, r) => a + r.v, 0) || 1;
+    const share = Object.fromEntries(base.map(r => [r.k, r.v / bt]));
+    const catW = db.prepare(`SELECT i.sp_category k, SUM(t.value) v FROM transactions t
+        JOIN stores s ON s.warehouse_code=t.warehouse_code JOIN items i ON i.item_code=t.item_code
+        WHERE s.hd_code=? AND (${inRange}) GROUP BY 1`).all(hd, ...rp);
+    const cats = catW.map(r => ({ label: r.k, actual: r.v, expected: (share[r.k] || 0) * expectedW,
+                                  value: r.v - (share[r.k] || 0) * expectedW }))
+                     .sort((a, b) => b.value - a.value);
+    const excess = actualW - expectedW;
+
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F')
+       .text(`Deviating ${bucket}s: ${above.map(b => b.b).join(', ')}`, X, y); y += 12;
+    doc.font('Helvetica').fontSize(8).fillColor('#14181F')
+       .text(`Actual ${kfmt(actualW)} vs expected at target ${kfmt(expectedW)} → excess `, X, y, { continued: true })
+       .font('Helvetica-Bold').fillColor('#C22F2F').text(`${kfmt(excess)} PKR`); y += 18;
+
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text('Excess by category', X, y); y += 14;
+    pdfDonut(doc, X + 65, y + 55, 52, cats.filter(c => c.value > 0).slice(0, 8), { centerLabel: 'excess PKR' });
+    // table beside donut
+    let ty = y; const tx = X + 300;
+    doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#69707C');
+    doc.text('CATEGORY', tx, ty, { width: 110 }); doc.text('ACTUAL', tx + 110, ty, { width: 45, align: 'right' });
+    doc.text('EXPECTED', tx + 155, ty, { width: 45, align: 'right' }); doc.text('EXCESS', tx + 200, ty, { width: 45, align: 'right' });
+    ty += 9;
+    for (const c of cats.slice(0, 10)) {
+      doc.font('Helvetica').fontSize(6.8).fillColor('#14181F').text(String(c.label).slice(0, 24), tx, ty, { width: 110, lineBreak: false });
+      doc.text(kfmt(c.actual), tx + 110, ty, { width: 45, align: 'right' });
+      doc.text(kfmt(c.expected), tx + 155, ty, { width: 45, align: 'right' });
+      doc.font('Helvetica-Bold').fillColor(c.value > 0 ? '#C22F2F' : '#5B8C5A')
+         .text((c.value > 0 ? '+' : '') + kfmt(c.value), tx + 200, ty, { width: 45, align: 'right' });
+      ty += 10.5;
+    }
+    y = Math.max(y + 130, ty + 10);
+
+    const mach = db.prepare(`SELECT s.store_name || ' · ' || m.short_desc k, SUM(t.value) v, COUNT(*) n
+        FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+        JOIN machines m ON m.machine_id=t.machine_id
+        WHERE s.hd_code=? AND (${inRange}) GROUP BY t.machine_id ORDER BY v DESC LIMIT 10`).all(hd, ...rp);
+    doc.font('Helvetica-Bold').fontSize(9).fillColor('#14181F').text('Top machines in the deviating window', X, y); y += 14;
+    pdfBarChart(doc, X + 34, y, W - 34, 95,
+      mach.map(m => ({ label: m.k.split(' · ').pop(), value: m.v })), { color: '#23386B' });
+    y += 120;
+  } else {
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#5B8C5A')
+       .text(`Within budget: no ${bucket} exceeded the target in this period. ✓`, X, y); y += 20;
+  }
+  doc.font('Helvetica').fontSize(6.5).fillColor('#69707C')
+     .text('Green bars are within target; red bars exceed it. Machine days pro-rated from admin-entered ranges.', X, y);
+  doc.end();
 });
 
 const PORT = process.env.PORT || 3000;
