@@ -598,7 +598,8 @@ app.post('/api/admin/machine-days', requireRole('admin'), (req, res) => {
   if (!toSave.length) return res.status(400).json({ error: 'No machine-day values entered.' });
   const tx = db.transaction(() => toSave.forEach(([hd, num]) => ins.run(hd, date_from, date_to, num)));
   tx();
-  res.json({ ok: true, saved: toSave.length });
+  const alerts = checkFY(fyOf(date_from)) || 0;
+  res.json({ ok: true, saved: toSave.length, alerts_generated: alerts });
 });
 
 app.post('/api/admin/machine-days/:id/delete', requireRole('admin'), (req, res) => {
@@ -724,7 +725,8 @@ app.post('/api/admin/targets', requireRole('admin'), (req, res) => {
     if (!isFinite(num) || num <= 0) return res.status(400).json({ error: `Invalid target for ${hd}.` });
     up.run(y, hd, num); n++;
   }
-  res.json({ ok: true, saved: n });
+  const alerts = n ? (checkFY(y) || 0) : 0;
+  res.json({ ok: true, saved: n, alerts_generated: alerts });
 });
 
 // Alerts (scoped: plant users see their own HD only)
@@ -740,6 +742,41 @@ app.post('/api/alerts/seen', requireAuth, (req, res) => {
   db.prepare(`UPDATE alerts SET seen=1 ${scope}`).run(...(scope ? [req.user.hd_code] : []));
   res.json({ ok: true });
 });
+
+// Re-check a fiscal year after targets or machine days are saved (dedup-safe):
+// alerts fire for breaches that don't already have an identical alert.
+function checkFY(fyStart) {
+  try {
+    const f = `${fyStart}-07-01`, t = `${fyStart + 1}-06-30`;
+    const dr = db.prepare('SELECT MIN(tran_date) a, MAX(tran_date) b FROM transactions WHERE tran_date BETWEEN ? AND ?').get(f, t);
+    if (!dr.a) return;
+    const from = dr.a, to = dr.b;                       // clip to actual data
+    const targets = Object.fromEntries(db.prepare('SELECT hd_code, target_rate FROM targets WHERE fy_start=?')
+                                         .all(fyStart).map(r => [r.hd_code, r.target_rate]));
+    if (!Object.keys(targets).length) return;
+    const mdays = machineDaysBetween(from, to);
+    const cost = db.prepare(`SELECT s.hd_code AS hd, SUM(t.value) AS cost
+                             FROM transactions t JOIN stores s ON s.warehouse_code=t.warehouse_code
+                             WHERE t.tran_date BETWEEN ? AND ? GROUP BY s.hd_code`).all(from, to);
+    const exists = db.prepare(`SELECT 1 FROM alerts WHERE hd_code=? AND period_from=? AND period_to=? AND target_rate=?`);
+    const ins = db.prepare(`INSERT INTO alerts (hd_code, period_from, period_to, actual_rate, target_rate, message)
+                            VALUES (?,?,?,?,?,?)`);
+    const created = [];
+    for (const r of cost) {
+      const tg = targets[r.hd], md = mdays[r.hd];
+      if (!tg || !md) continue;
+      const rate = +(r.cost / md).toFixed(2);
+      if (rate <= tg) continue;
+      if (exists.get(r.hd, from, to, tg)) continue;     // already alerted for this exact state
+      const pct = ((rate / tg - 1) * 100).toFixed(1);
+      const msg = `${r.hd}: ${rate} PKR/machine day for ${from}..${to} — ${pct}% ABOVE the ${fyLabel(fyStart)} target of ${tg}. See Target analysis for the full breakdown.`;
+      ins.run(r.hd, from, to, rate, tg, msg);
+      created.push({ hd: r.hd, pct, message: msg });
+    }
+    emailAlerts(created);
+    return created.length;
+  } catch (e) { console.error('FY check failed:', e.message); }
+}
 
 // After an upload: compare the uploaded period's rate per HD against its FY target
 function generateAlerts(dateFrom, dateTo) {
