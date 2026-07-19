@@ -930,7 +930,7 @@ function getVapid() {
   return { publicKey: pub.value, privateKey: priv.value };
 }
 const VAPID = getVapid();
-webpush.setVapidDetails('mailto:alerts@spares-ledger.local', VAPID.publicKey, VAPID.privateKey);
+webpush.setVapidDetails('https://spares-ledger-production.up.railway.app', VAPID.publicKey, VAPID.privateKey);
 
 app.get('/api/push/key', requireAuth, (req, res) => res.json({ key: VAPID.publicKey }));
 app.post('/api/push/subscribe', requireAuth, (req, res) => {
@@ -941,18 +941,27 @@ app.post('/api/push/subscribe', requireAuth, (req, res) => {
     .run(req.user.user_id, sub.endpoint, JSON.stringify(sub));
   res.json({ ok: true });
 });
-app.post('/api/push/test', requireAuth, (req, res) => {
-  const subs = db.prepare('SELECT sub_id, sub_json FROM push_subs WHERE user_id=?').all(req.user.user_id);
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  const subs = db.prepare('SELECT sub_id, sub_json, created_at FROM push_subs WHERE user_id=?').all(req.user.user_id);
   if (!subs.length) return res.status(400).json({ error: 'No devices registered for your account yet — enable notifications first.' });
   const payload = JSON.stringify({ title: '✓ Spares Ledger test', body: 'Notifications are working on this device.' });
-  let sent = 0;
-  for (const s of subs) {
-    webpush.sendNotification(JSON.parse(s.sub_json), payload).catch(err => {
-      if (err.statusCode === 404 || err.statusCode === 410) db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);
-    });
-    sent++;
-  }
-  res.json({ ok: true, devices: sent });
+  const results = await Promise.all(subs.map(async (s, i) => {
+    try {
+      await webpush.sendNotification(JSON.parse(s.sub_json), payload);
+      return { device: i + 1, delivered: true };
+    } catch (err) {
+      const code = err.statusCode || 0;
+      if (code === 404 || code === 410) db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);
+      console.error('push test failed:', code, (err.body || err.message || '').slice(0, 200));
+      return { device: i + 1, delivered: false, status: code,
+               hint: code === 404 || code === 410 ? 'stale device — re-enable notifications there'
+                   : code === 403 || code === 401 ? 'push service rejected the sender key'
+                   : code === 400 ? 'bad request — subscription mismatch'
+                   : 'network/unknown — see server logs' };
+    }
+  }));
+  const okN = results.filter(r => r.delivered).length;
+  res.json({ ok: true, delivered: okN, failed: results.length - okN, results });
 });
 
 app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
