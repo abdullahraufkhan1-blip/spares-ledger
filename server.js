@@ -155,7 +155,7 @@ function leanQuery(q, groupExprCols) {
 const GROUPS = {
   hd:          { col: 'hd_code',                        srcs: ['hd_code'],               lean: 's.hd_code',                              label: 'Hosiery Division' },
   unit:        { col: "hd_code || ' ' || unit_code",    srcs: ['hd_code','unit_code'],   lean: "s.hd_code || ' ' || s.unit_code",        label: 'Unit' },
-  store:       { col: 'store_name',                     srcs: ['store_name'],            lean: 's.store_name',                           label: 'Store' },
+  store:       { col: 'store_name',                     srcs: ['store_name'],            lean: 's.store_name',                           label: 'Store', desc: 'warehouse_code', leanDesc: "'Locator ' || MIN(s.warehouse_code)" },
   cost_center: { col: 'cost_center',                    srcs: ['cost_center'],           lean: 'COALESCE(c.cc_name, t.cc_code)',         label: 'Cost Center' },
   model:       { col: 'model',                          srcs: ['model'],                 lean: 'mm.model_display',                        label: 'Machine Model' },
   machine:     { col: "store_name || ' · ' || short_desc", srcs: ['store_name','short_desc'], lean: "s.store_name || ' · ' || m.short_desc", label: 'Machine' },
