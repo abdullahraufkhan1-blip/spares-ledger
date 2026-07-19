@@ -175,8 +175,10 @@ async function load(){
       <td>${u.hd_code||'—'}</td>
       <td>${u.active?'active':'deactivated'}</td>
       <td style="text-align:right;white-space:nowrap">
+        <button onclick="renameUser(${u.user_id},'${u.username}')">Rename</button>
         <button onclick="resetPw(${u.user_id},'${u.username}')">Reset password</button>
         <button onclick="toggle(${u.user_id},${u.active?0:1})">${u.active?'Deactivate':'Reactivate'}</button>
+        <button style="color:var(--bleed);border-color:var(--bleed)" onclick="delUser(${u.user_id},'${u.username}')">Delete</button>
       </td>
     </tr>`).join('');
 }
@@ -187,6 +189,8 @@ async function post(url,body){
   m.textContent=r.ok?'Saved.':(j.error||'Failed.');
   if(r.ok) load();
 }
+window.renameUser=(id,cur)=>{const n=prompt(`New username for ${cur} (min 3 chars):`,cur); if(n&&n!==cur) post('/api/admin/users/'+id,{username:n});};
+window.delUser=(id,name)=>{if(confirm(`Permanently DELETE user "${name}"? This cannot be undone — their sign-in is gone forever. (Use Deactivate if you might need them back.)`)) post('/api/admin/users/'+id+'/delete',{});};
 window.resetPw=(id,name)=>{const p=prompt(`New password for ${name} (min 8 chars):`); if(p) post('/api/admin/users/'+id,{password:p});};
 window.toggle=(id,active)=>post('/api/admin/users/'+id,{active});
 $('new').onsubmit=e=>{e.preventDefault();
