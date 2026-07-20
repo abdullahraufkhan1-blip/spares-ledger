@@ -41,6 +41,7 @@ form.new button{background:var(--indigo);color:#fff;border:none;padding:9px 18px
 
   <div class="panel">
     <h2>Upload monthly transaction file</h2>
+    <button id="backup-btn" style="float:right;border:1px solid var(--line);background:#fff;color:var(--muted);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px" title="Download a consistent copy of the whole database — keep one after every monthly upload">Download DB backup</button>
     <form class="new" id="up-form">
       <div class="field" style="flex:2"><label>Transaction .xlsx (full month or partial, e.g. 1–15 Jul)</label>
         <input type="file" id="up-file" accept=".xlsx"></div>
@@ -344,7 +345,7 @@ $('md-form').onsubmit=async e=>{
 };
 
 // ---------- uploads ----------
-document.getElementById('backup-btn').onclick=()=>{window.open('/api/admin/backup','_blank');};
+const _bk=document.getElementById('backup-btn'); if(_bk)_bk.onclick=()=>{window.open('/api/admin/backup','_blank');};
 async function loadUploads(){
   const r=await fetch('/api/admin/uploads'); if(!r.ok) return;
   const ups=await r.json();
