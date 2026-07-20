@@ -344,6 +344,7 @@ $('md-form').onsubmit=async e=>{
 };
 
 // ---------- uploads ----------
+document.getElementById('backup-btn').onclick=()=>{window.open('/api/admin/backup','_blank');};
 async function loadUploads(){
   const r=await fetch('/api/admin/uploads'); if(!r.ok) return;
   const ups=await r.json();

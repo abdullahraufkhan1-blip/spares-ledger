@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#23386B">
+<title>Data warnings · Spares Ledger</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#EEF0F3;--surface:#fff;--ink:#14181F;--muted:#69707C;--indigo:#23386B;--indigo-soft:#E7EBF4;
+      --bleed:#C22F2F;--line:#DDE1E7;--radius:10px;
+      --display:'Archivo',sans-serif;--body:'IBM Plex Sans',sans-serif;--mono:'IBM Plex Mono',monospace}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px}
+header{background:var(--indigo);color:#fff;padding:14px 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+header h1{font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:.4px;text-transform:uppercase}
+header .sub{font-size:12px;opacity:.75}
+header a{margin-left:auto;color:#C9D2E6;font-size:12.5px}
+.wrap{max-width:1080px;margin:0 auto;padding:14px 14px 60px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);margin-top:12px;overflow:hidden}
+.panel-head{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.panel-head h2{font-family:var(--display);font-weight:700;font-size:15px}
+select,input,button{font:inherit}
+select,input{border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:#fff}
+button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:7px 12px;cursor:pointer;color:var(--ink)}
+button.primary{background:var(--indigo);border-color:var(--indigo);color:#fff;font-weight:600}
+.summary{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.tchip{border:1px solid var(--line);border-radius:99px;padding:6px 12px;font-size:12.5px;cursor:pointer;background:#fff;display:flex;gap:8px;align-items:center}
+.tchip b{font-family:var(--mono)}
+.tchip.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+table{width:100%;border-collapse:collapse}
+th{font-family:var(--display);font-weight:600;font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:7px 10px;border-bottom:1px solid #F0F2F5;vertical-align:top}
+td.row{font-family:var(--mono);font-size:12px;color:var(--muted);width:70px}
+td.sev{width:60px;font-family:var(--mono);font-size:11.5px}
+td.sev.WARN{color:#B8860B} td.sev.ERROR{color:var(--bleed);font-weight:600}
+td.msg{font-size:13px}
+.pager{display:flex;gap:10px;align-items:center;justify-content:center;padding:12px;color:var(--muted);font-size:13px}
+.empty{padding:26px;text-align:center;color:var(--muted)}
+.hint{padding:10px 14px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Spares Ledger</h1><span class="sub">Data warnings</span>
+  <a href="/users.html">← Back to administration</a>
+</header>
+<div class="wrap">
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Warnings for upload</h2>
+      <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="up-sel"></select>
+        <input id="q" placeholder="Search messages… (e.g. GL0507)" style="min-width:200px">
+        <button id="go" class="primary">Apply</button>
+        <button id="csv">Download CSV</button>
+      </span>
+    </div>
+    <div class="summary" id="summary"></div>
+    <div id="holder"><div class="empty">Pick an upload above.</div></div>
+    <div class="pager" id="pager" hidden>
+      <button id="prev">← Prev</button><span id="pageinfo"></span><button id="next">Next →</button>
+    </div>
+    <div class="hint">Warnings never block a load — every row was imported. They mark disagreements worth checking in the source data: the loader trusts Asset Loc for machine identity, notes when Short Desc disagrees, when a cost is missing (row counts, contributes 0 PKR), or when the warehouse column and Asset Loc differ. Click a type chip to filter to it.</div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>Number(n).toLocaleString('en-PK');
+const st={upload:null,type:null,q:'',page:1};
+
+async function init(){
+  const me=await fetch('/api/me'); if(me.status===401){location.href='/login.html';return;}
+  const u=await me.json(); if(u.role!=='admin'){location.href='/';return;}
+  const d=await (await fetch('/api/admin/warnings')).json();
+  const sel=$('up-sel');
+  d.uploads.forEach(x=>{
+    const o=document.createElement('option'); o.value=x.upload_id;
+    o.textContent=`${x.filename} (${x.date_from} → ${x.date_to}) — ${fmt(x.warnings)} ⚠`;
+    sel.appendChild(o);
+  });
+  const want=new URLSearchParams(location.search).get('upload');
+  if(want) sel.value=want;
+  st.upload=+sel.value||null;
+  sel.onchange=()=>{st.upload=+sel.value;st.type=null;st.page=1;load();};
+  $('go').onclick=()=>{st.q=$('q').value.trim();st.page=1;load();};
+  $('q').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('go').click();}};
+  $('csv').onclick=()=>{if(st.upload)window.open('/api/admin/warnings.csv?upload_id='+st.upload,'_blank');};
+  $('prev').onclick=()=>{if(st.page>1){st.page--;load();}};
+  $('next').onclick=()=>{st.page++;load();};
+  if(st.upload)load();
+}
+
+async function load(){
+  const p=new URLSearchParams({upload_id:st.upload,page:st.page});
+  if(st.type)p.set('type',st.type);
+  if(st.q)p.set('q',st.q);
+  const r=await fetch('/api/admin/warnings?'+p.toString());
+  const d=await r.json();
+  if(!r.ok){$('holder').innerHTML=`<div class="empty">${d.error||'Failed.'}</div>`;return;}
+  const sum=$('summary');
+  const totalAll=d.summary.reduce((a,s)=>a+s.n,0);
+  sum.innerHTML=`<span class="tchip ${st.type?'':'on'}" data-t="">All <b>${fmt(totalAll)}</b></span>`+
+    d.summary.map(s=>`<span class="tchip ${st.type===s.type?'on':''}" data-t="${s.type}">${s.type} <b>${fmt(s.n)}</b></span>`).join('');
+  sum.querySelectorAll('.tchip').forEach(c=>c.onclick=()=>{st.type=c.dataset.t||null;st.page=1;load();});
+  if(!d.rows.length){$('holder').innerHTML='<div class="empty">No warnings match.</div>';$('pager').hidden=true;return;}
+  $('holder').innerHTML=`<table><thead><tr><th>Excel row</th><th>Severity</th><th>Message</th></tr></thead><tbody>${
+    d.rows.map(x=>`<tr><td class="row">${x.row_ref??'—'}</td><td class="sev ${x.severity}">${x.severity}</td><td class="msg">${x.message}</td></tr>`).join('')
+  }</tbody></table>`;
+  $('pager').hidden=d.pages<=1;
+  $('pageinfo').textContent=`Page ${d.page} of ${d.pages} · ${fmt(d.total)} matching`;
+  $('prev').disabled=d.page<=1; $('next').disabled=d.page>=d.pages;
+}
+init();
+</script>
+</body>
+</html>
