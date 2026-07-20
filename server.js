@@ -80,6 +80,7 @@ function migrate() {
     CHECK (date_from <= date_to))`);
 }
 migrate();
+db.pragma('wal_checkpoint(TRUNCATE)');   // shrink the journal left by previous runs
 
 db.pragma('journal_mode = WAL');
 
@@ -647,6 +648,7 @@ app.post('/api/admin/upload', requireRole('admin'), upload.single('file'), (req,
       if (last.date_from && last.date_to) generateAlerts(last.date_from, last.date_to);
     }
     bustMeta();
+    db.pragma('wal_checkpoint(TRUNCATE)');
     res.json({ ok: true, log: (stdout || '').slice(0, 1200) });
   });
 });
@@ -689,6 +691,7 @@ app.post('/api/admin/purge', requireRole('admin'), (req, res) => {
   });
   const r = tx();
   bustMeta();
+  db.pragma('wal_checkpoint(TRUNCATE)');
   res.json({ ok: true, deleted_transactions: r.n, deleted_machine_day_entries: r.mdn });
 });
 
@@ -1288,6 +1291,77 @@ app.get('/api/report-targets.pdf', requireAuth, (req, res) => {
   doc.font('Helvetica').fontSize(6.5).fillColor('#69707C')
      .text('Green bars are within target; red bars exceed it. Machine days pro-rated from admin-entered ranges.', X, y);
   doc.end();
+});
+
+
+// ---------- Admin: consistent database backup download ----------
+app.get('/api/admin/backup', requireRole('admin'), async (req, res) => {
+  const out = path.join(require('os').tmpdir(), 'spares-backup-' + Date.now() + '.db');
+  try {
+    await db.backup(out);                       // consistent snapshot even while in use
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.download(out, `inventory-backup-${stamp}.db`, () => fs.unlink(out, () => {}));
+  } catch (e) {
+    fs.unlink(out, () => {});
+    res.status(500).json({ error: 'Backup failed: ' + e.message });
+  }
+});
+
+// ---------- Admin: ingest warnings viewer ----------
+const WARN_TYPE = `CASE
+  WHEN message LIKE '%digits%' OR message LIKE '%mismatch%' OR message LIKE '%Short Desc%' THEN 'Machine name mismatch'
+  WHEN message LIKE '%cost%' OR message LIKE '%value%' THEN 'Missing cost / value'
+  WHEN message LIKE '%warehouse%' OR message LIKE '%Warehouse%' THEN 'Warehouse disagreement'
+  WHEN message LIKE '%blank%' THEN 'Blank field'
+  ELSE 'Other' END`;
+
+app.get('/warnings.html', (req, res) => {
+  if (!req.user) return res.redirect('/login.html');
+  if (req.user.role !== 'admin') return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'public', 'warnings.html'));
+});
+
+app.get('/api/admin/warnings', requireRole('admin'), (req, res) => {
+  const uploadId = parseInt(req.query.upload_id, 10);
+  if (!uploadId) {
+    // no upload chosen: return the uploads list for the picker
+    const ups = db.prepare(`SELECT u.upload_id, u.filename, u.date_from, u.date_to,
+                                   (SELECT COUNT(*) FROM ingest_issues i WHERE i.upload_id=u.upload_id) AS warnings
+                            FROM uploads u ORDER BY u.date_from DESC`).all();
+    return res.json({ uploads: ups });
+  }
+  const up = db.prepare('SELECT upload_id, filename, date_from, date_to, row_count FROM uploads WHERE upload_id=?').get(uploadId);
+  if (!up) return res.status(404).json({ error: 'Upload not found.' });
+  const type = req.query.type || null;
+  const qtext = (req.query.q || '').trim();
+  const page = Math.max(parseInt(req.query.page || '1', 10), 1);
+  const per = Math.min(Math.max(parseInt(req.query.per || '200', 10), 20), 500);
+
+  const summary = db.prepare(`SELECT ${WARN_TYPE} AS type, COUNT(*) AS n
+                              FROM ingest_issues WHERE upload_id=? GROUP BY 1 ORDER BY n DESC`).all(uploadId);
+  const conds = ['upload_id = ?']; const params = [uploadId];
+  if (type) { conds.push(`${WARN_TYPE} = ?`); params.push(type); }
+  if (qtext) { conds.push('message LIKE ?'); params.push('%' + qtext + '%'); }
+  const where = 'WHERE ' + conds.join(' AND ');
+  const total = db.prepare(`SELECT COUNT(*) AS n FROM ingest_issues ${where}`).get(...params).n;
+  const rows = db.prepare(`SELECT severity, row_ref, message FROM ingest_issues ${where}
+                           ORDER BY row_ref LIMIT ? OFFSET ?`).all(...params, per, (page - 1) * per);
+  res.json({ upload: up, summary, total, page, per, pages: Math.max(Math.ceil(total / per), 1), rows });
+});
+
+app.get('/api/admin/warnings.csv', requireRole('admin'), (req, res) => {
+  const uploadId = parseInt(req.query.upload_id, 10);
+  if (!uploadId) return res.status(400).json({ error: 'upload_id required.' });
+  const up = db.prepare('SELECT filename, date_from, date_to FROM uploads WHERE upload_id=?').get(uploadId);
+  if (!up) return res.status(404).json({ error: 'Upload not found.' });
+  const rows = db.prepare(`SELECT severity, row_ref, ${WARN_TYPE} AS type, message
+                           FROM ingest_issues WHERE upload_id=? ORDER BY row_ref`).all(uploadId);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="warnings-${(up.filename || 'upload').replace(/[^\w.-]/g, '_')}.csv"`);
+  const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  res.write('severity,excel_row,type,message\n');
+  for (const r of rows) res.write([r.severity, r.row_ref, esc(r.type), esc(r.message)].join(',') + '\n');
+  res.end();
 });
 
 const PORT = process.env.PORT || 3000;
