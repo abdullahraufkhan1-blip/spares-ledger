@@ -793,6 +793,7 @@ function checkFY(fyStart) {
       created.push({ hd: r.hd, pct, message: msg });
     }
     emailAlerts(created);
+    sendPush(created);
     return created.length;
   } catch (e) { console.error('FY check failed:', e.message); }
 }
@@ -981,11 +982,15 @@ function sendPush(newAlerts) {
                                : `⚠ ${mine.length} divisions above target`,
       body: mine.map(a => a.message.split(' See Target analysis')[0]).join('\n').slice(0, 400),
     });
-    webpush.sendNotification(JSON.parse(s.sub_json), payload).catch(err => {
-      if (err.statusCode === 404 || err.statusCode === 410)
-        db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);   // dead device subscription
-      else console.error('push failed:', err.statusCode || err.message);
-    });
+    try {
+      webpush.sendNotification(JSON.parse(s.sub_json), payload).then(
+        () => console.log('alert push delivered to device', s.sub_id),
+        err => {
+          if (err.statusCode === 404 || err.statusCode === 410)
+            db.prepare('DELETE FROM push_subs WHERE sub_id=?').run(s.sub_id);   // dead device subscription
+          else console.error('alert push failed:', err.statusCode || err.message);
+        });
+    } catch (err) { console.error('alert push failed (sync):', err.message); }
   }
 }
 
