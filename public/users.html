@@ -353,7 +353,7 @@ async function loadUploads(){
     <tr><td class="mono">${u.date_from} → ${u.date_to}</td><td>${u.filename}</td>
         <td class="mono">${u.loaded_at}</td><td class="mono">${u.row_count.toLocaleString()}</td>
         <td class="mono">${Math.round(u.total_value).toLocaleString()}</td>
-        <td>${u.warnings? u.warnings+' ⚠':'0'}</td></tr>`).join('')
+        <td>${u.warnings?`<a href="/warnings.html?upload=${u.upload_id}" title="View warning details">${u.warnings.toLocaleString()} ⚠</a>`:'0'}</td></tr>`).join('')
     :'<tr><td colspan="6" style="color:var(--muted)">No files loaded yet.</td></tr>';
 }
 loadUploads();
