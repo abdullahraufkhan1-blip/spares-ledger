@@ -46,5 +46,8 @@ document.getElementById('f').onsubmit = async e => {
   else document.getElementById('err').textContent = (await r.json()).error || 'Sign-in failed.';
 };
 </script>
+     <script>
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
 </body>
 </html>
