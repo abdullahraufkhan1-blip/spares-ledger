@@ -294,21 +294,6 @@ async function init(){
         box.innerHTML=pushBtn+'<div class="al">Cleared. New alerts will appear here.</div>';
         $('bell-n').hidden=true;
         loadAlerts();
-  // self-healing push registration: if this device has permission but the server
-  // lost (or never had) its subscription, quietly re-register on every load.
-  (async()=>{
-    try{
-      if(!('serviceWorker' in navigator)||!('PushManager' in window)||Notification.permission!=='granted') return;
-      const reg=await navigator.serviceWorker.ready;
-      let sub=await reg.pushManager.getSubscription();
-      if(!sub){
-        const {key}=await (await fetch('/api/push/key')).json();
-        const conv=k=>{const p='='.repeat((4-k.length%4)%4);const b=atob((k+p).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(b,c=>c.charCodeAt(0));};
-        sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:conv(key)});
-      }
-      await fetch('/api/push/subscribe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(sub)});
-    }catch(e){/* silent — bell button remains the manual path */}
-  })();
       };
       const pt=document.getElementById('push-test');
       if(pt) pt.onclick=async()=>{
