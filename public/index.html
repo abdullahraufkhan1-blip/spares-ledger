@@ -560,7 +560,8 @@ function drawKpis(kpi){
       ? `<div class="tgt ${r.vs_target_pct>0?'over':'under'}">target ${r.target.toFixed(2)} · ${r.vs_target_pct>0?'+':''}${r.vs_target_pct}%</div>` : '';
     d.innerHTML=`<div class="hd">${r.hd}</div>
       <div class="rate">${r.cost_per_mday==null?'—':r.cost_per_mday.toFixed(2)} <small>/ machine day</small></div>
-      <div class="cost">${fmt(r.cost)} PKR</div>${tgt}`;
+      <div class="cost">${fmt(r.cost)} PKR</div>
+      <div class="cost" style="color:var(--muted)">${r.machine_days==null?'— ':fmt(Math.round(r.machine_days))} machine days</div>${tgt}`;
     d.title='Filter to '+r.hd;
     d.onclick=()=>{state.filters.hd=r.hd; syncSelects(); state.group_by='store'; render();};
     box.appendChild(d);
