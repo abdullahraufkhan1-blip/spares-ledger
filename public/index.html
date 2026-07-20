@@ -236,18 +236,21 @@ async function init(){
     `<button id="logout">Sign out</button>`;
   document.getElementById('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST'});location.href='/login.html';};
   META=await (await fetch('/api/meta')).json();
-  $('from').value=state.from=META.dates.min;
-  $('to').value=state.to=META.dates.max;
-  // fiscal years: Jul->Jun, starting FY 25-26
+  // default view: the running fiscal year — FY start (or first data, if later) up to the latest loaded date
   const fySel=$('fy');
   const lastDate=META.dates.max||new Date().toISOString().slice(0,10);
   const lastFyStart=(+lastDate.slice(5,7)>=7)?+lastDate.slice(0,4):+lastDate.slice(0,4)-1;
+  const fyFrom=`${lastFyStart}-07-01`;
+  const defFrom=(META.dates.min&&META.dates.min>fyFrom)?META.dates.min:fyFrom;
+  $('from').value=state.from=defFrom;
+  $('to').value=state.to=lastDate;
   for(let y=2025;y<=lastFyStart;y++){
     const o=document.createElement('option');
     o.value=`${y}-07-01|${y+1}-06-30`;
     o.textContent=`FY ${String(y).slice(2)}-${String(y+1).slice(2)}`;
     fySel.appendChild(o);
   }
+  fySel.value=`${lastFyStart}-07-01|${lastFyStart+1}-06-30`;
   fySel.onchange=()=>{
     if(!fySel.value) return;
     const [f,t]=fySel.value.split('|');
